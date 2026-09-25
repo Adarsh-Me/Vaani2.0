@@ -1,0 +1,19 @@
+# Build output. The installable app is distributed as a Release asset, not through git.
+build/
+.gradle/
+*.apk
+
+# Machine-local: SDK and JDK paths, editor state.
+local.properties
+.impeccable/
+
+# Scratch: pulled audio, screenshots, one-off measurement harnesses.
+tmp/
+
+# 812 MB of custom INT8 ONNX exports. Five of these files are over GitHub's 100 MB
+# per-file limit, so they cannot be committed at all - see the Models section in README.
+app/src/main/assets/models/
+
+# OS noise
+.DS_Store
+Thumbs.db

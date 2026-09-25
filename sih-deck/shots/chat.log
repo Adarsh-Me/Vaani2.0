@@ -1,0 +1,31 @@
+--------- beginning of main
+09-23 20:10:43.264 24631 24654 E REFS    : EN_F mel=320 ids=42 f0=240 pause=0.00 ratio=7.6 trusted=true
+09-23 20:10:43.266 24631 24654 E REFS    : EN_M mel=320 ids=30 f0=131 pause=0.00 ratio=10.7 trusted=false
+09-23 20:10:43.268 24631 24654 E REFS    : HI_F mel=241 ids=31 f0=197 pause=0.00 ratio=7.8 trusted=true
+09-23 20:10:43.269 24631 24654 E REFS    : HI_M mel=241 ids=34 f0=103 pause=0.00 ratio=7.1 trusted=true
+09-23 20:10:43.270 24631 24654 E REFS    : BN_M mel=320 ids=36 f0=135 pause=0.00 ratio=8.9 trusted=false
+09-23 20:10:43.271 24631 24654 E REFS    : GU_F mel=320 ids=25 f0=238 pause=0.00 ratio=12.8 trusted=false
+09-23 20:10:43.273 24631 24654 E REFS    : GU_M mel=299 ids=31 f0=145 pause=0.00 ratio=9.6 trusted=false
+09-23 20:10:43.274 24631 24654 E REFS    : KN_F mel=270 ids=26 f0=202 pause=0.00 ratio=10.4 trusted=false
+09-23 20:10:43.275 24631 24654 E REFS    : KN_M mel=246 ids=25 f0=147 pause=0.13 ratio=9.8 trusted=false
+09-23 20:10:43.276 24631 24654 E REFS    : ML_F mel=242 ids=30 f0=255 pause=0.00 ratio=8.1 trusted=false
+09-23 20:10:43.277 24631 24654 E REFS    : ML_M mel=228 ids=25 f0=129 pause=0.06 ratio=9.1 trusted=false
+09-23 20:10:43.278 24631 24654 E REFS    : MR_F mel=320 ids=30 f0=235 pause=0.21 ratio=10.7 trusted=false
+09-23 20:10:43.279 24631 24654 E REFS    : MR_M mel=285 ids=27 f0=129 pause=0.18 ratio=10.6 trusted=false
+09-23 20:10:43.281 24631 24654 E REFS    : PA_F mel=222 ids=31 f0=242 pause=0.04 ratio=7.2 trusted=true
+09-23 20:10:43.281 24631 24654 E REFS    : PA_M mel=256 ids=32 f0=103 pause=0.00 ratio=8.0 trusted=true
+09-23 20:10:43.282 24631 24654 E REFS    : TA_F mel=227 ids=34 f0=197 pause=0.00 ratio=6.7 trusted=true
+09-23 20:10:43.284 24631 24654 E REFS    : TA_M mel=219 ids=34 f0=121 pause=0.01 ratio=6.4 trusted=true
+09-23 20:10:43.285 24631 24654 E REFS    : TE_F mel=320 ids=30 f0=242 pause=0.00 ratio=10.7 trusted=false
+09-23 20:10:43.285 24631 24654 E REFS    : TE_M mel=311 ids=36 f0=211 pause=0.05 ratio=8.6 trusted=false
+09-23 20:10:43.286 24631 24654 E LOAD    : mt=16974ms stt=2436ms tts=6127ms refs=27399ms total=52936ms
+09-23 20:10:56.645 24631 24654 E PLAYER  : build mode=0 bytes=149504 refused state=2
+09-23 20:10:59.779 24631 24654 E PLAYER  : stream n=74752 head=74752
+09-23 20:10:59.784 24631 24654 E USER    : voice stt=1092ms mt=627ms render=11199ms played=3307ms spoke=14706ms pcm=74752 err= enc=72 fm=11104 voc=125 head=729 istft=183 frames=289/cond=530 steps=[1332,1151,1160,1176,1127,1225,1148,1179]
+09-23 20:11:04.861 24631 24655 E PLAYER  : build mode=0 bytes=149504 refused state=2
+09-23 20:11:07.997 24631 24655 E PLAYER  : stream n=74752 head=74752
+09-23 20:11:08.740 24631 24654 E PLAYER  : build mode=0 bytes=103936 refused state=2
+09-23 20:11:10.957 24631 24654 E PLAYER  : stream n=51968 head=51968
+09-23 20:11:10.960 24631 24654 E USER    : typed mt=369ms render=8491ms played=2238ms spoke=10800ms pcm=51968 err= enc=22 fm=8459 voc=87 head=86 istft=117 frames=200/cond=441 steps=[759,923,955,963,1228,983,996,1069]
+09-23 20:11:13.392 24631 24654 E PLAYER  : build mode=0 bytes=103936 refused state=2
+09-23 20:11:15.641 24631 24654 E PLAYER  : stream n=51968 head=51968
