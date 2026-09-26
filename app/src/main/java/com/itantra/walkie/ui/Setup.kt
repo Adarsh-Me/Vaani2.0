@@ -33,8 +33,10 @@ import com.itantra.walkie.WalkieViewModel
  * languages does that work. Name first, because it is what the other phones see; then what you
  * say, then what you want back.
  *
- * The voice input line is the honest constraint: recognition exists for Hindi only, so a
- * language without it is offered as typed input rather than as a dead microphone.
+ * The voice input line is the honest constraint: the mic is real for every language
+ * [WalkieViewModel.hasVoice] admits (Hindi on the specialist Conformer, the rest on
+ * Whisper-base when it is bundled), and a language without it is offered as typed
+ * input rather than as a dead microphone.
  */
 @Composable
 fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
@@ -95,7 +97,7 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                 LangGrid(
                     langs = all,
                     selected = spoken,
-                    subFor = { if (it == Lang.HI) "${it.label} · voice" else "${it.label} · typed" },
+                    subFor = { if (vm.hasVoice(it)) "${it.label} · voice" else "${it.label} · typed" },
                     onPick = { lg ->
                         spoken = if (spoken.any { it == lg }) {
                             (spoken - lg).toList().ifEmpty { listOf(lg) }
@@ -108,13 +110,13 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
 
             Section(
                 "Speak into the mic in",
-                "Speech recognition ships for हिन्दी only. Any other language you type, and it is " +
+                "Voice input works where you see · voice. Any other language you type, and it is " +
                     "still spoken back to you."
             ) {
                 LangGrid(
                     langs = spoken,
                     selected = listOf(micIn),
-                    subFor = { if (it == Lang.HI) null else "typed input" },
+                    subFor = { if (vm.hasVoice(it)) null else "typed input" },
                     onPick = { micIn = it }
                 )
             }

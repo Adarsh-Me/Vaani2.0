@@ -260,7 +260,8 @@ private fun BenchThread(
 // ------------------------------------------------------------------ phone 1's input
 
 /**
- * Typing is the reliable half of the bench: recognition exists for [Lang.HI] only, so any other
+ * Typing is the reliable half of the bench: the mic covers what [WalkieViewModel.hasVoice]
+ * admits (Hindi on the Conformer, the rest on Whisper-base when bundled), so any other
  * language on this side has to be typed - and a typed line still runs the whole translate and
  * speak path, which is most of what is being tested here. The mic keeps the console's
  * press-and-hold convention: press opens it, release recognises and puts the words on phone 2.
@@ -273,7 +274,7 @@ private fun BenchInput(vm: WalkieViewModel, requestMic: () -> Boolean) {
     val blocked = when {
         !vm.ready() -> "models are still loading"
         !vm.demoMicUsable() ->
-            "the mic reads ${Lang.HI.native} only · type it, or use sample"
+            "the mic has no voice model for ${vm.ui.demo.txLang.native} · type it, or use sample"
         else -> null
     }
     val live = onAir && blocked == null

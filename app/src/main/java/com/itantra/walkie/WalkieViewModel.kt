@@ -10,6 +10,7 @@ import ai.onnxruntime.OrtEnvironment
 import com.itantra.walkie.audio.MicRecorder
 import com.itantra.walkie.audio.Player
 import com.itantra.walkie.ml.ConformerStt
+import com.itantra.walkie.ml.WhisperStt
 import com.itantra.walkie.ml.DhVaaniEngine
 import com.itantra.walkie.ml.ModelInstaller
 import com.itantra.walkie.ml.TranslatorEngine
@@ -101,6 +102,8 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
     /** Every model and reference clip is read straight out of the installed APK. */
     private val bundled by lazy { com.itantra.walkie.ml.Bundled(getApplication()) }
     private var stt: ConformerStt? = null
+    /** Multilingual fallback for every non-Hindi language; null-safe when files are absent. */
+    private var sttMulti: WhisperStt? = null
     private var mt: TranslatorEngine? = null
     private var tts: DhVaaniEngine? = null
     private val mic = MicRecorder()
@@ -238,11 +241,23 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         mesh.reachable(com.itantra.walkie.net.Address.of(ui.active))
 
     /**
-     * Speech recognition exists for Hindi only, so the mic is real for exactly one of the
-     * languages an operator says they speak. The interface has to say so rather than offer a
-     * dead microphone.
+     * Which languages the microphone can actually read. Hindi rides the specialist
+     * Conformer; English and Tamil ride Whisper-base when its files are bundled. The
+     * other eight are typed, not because the model has no token for them but because
+     * what it returns for them is the wrong alphabet - see [WhisperStt.hasVoice].
+     * Anything else is typed input, never a dead microphone.
      */
-    fun micUsable(): Boolean = ui.src == Lang.HI && stt?.isReady() == true
+    fun hasVoice(lang: Lang): Boolean = if (lang == Lang.HI) {
+        stt?.isReady() == true
+    } else {
+        sttMulti?.hasVoice(lang) == true
+    }
+
+    /**
+     * Speech recognition is Hindi (Conformer) plus every language Whisper-base
+     * covers, so the mic is real for each language [hasVoice] admits.
+     */
+    fun micUsable(): Boolean = hasVoice(ui.src)
 
     /** Called from setup: identity is what peers see, and it survives restarts. */
     fun completeSetup(name: String, spoken: List<Lang>, micIn: Lang, hearIn: Lang) {
@@ -308,7 +323,7 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
 
     fun finishTalk() {
         viewModelScope.launch(Dispatchers.Default) {
-            recognise()?.let { withContext(Dispatchers.Main) { sendMessage(it.text, it.tone) } }
+            recognise(ui.src)?.let { withContext(Dispatchers.Main) { sendMessage(it.text, it.tone) } }
         }
     }
 
@@ -320,9 +335,10 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
      * says it. The tone is read from the same bytes the recogniser sees, before it: how someone
      * spoke is still there even when the words come back mangled. Returns null when nothing
      * usable came off the microphone; the caller decides where the words go, because the air and
-     * the bench route them differently.
+     * the bench route them differently. Hindi rides the specialist Conformer, every other
+     * language rides Whisper-base when it is bundled.
      */
-    private suspend fun recognise(): Said? {
+    private suspend fun recognise(lang: Lang): Said? {
         withContext(Dispatchers.Main) { updateUi(ui.copy(status = "decoding…")) }
         val pcm = mic.stop()
         val lvl = peak(pcm)
@@ -340,15 +356,23 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 "tone=${(tone.animation * 100).toInt()}%"
         )
         val t0 = System.currentTimeMillis()
-        val raw = stt?.transcribe(pcm)?.text ?: ""
+        val raw: String
+        val err: String
+        if (lang == Lang.HI) {
+            raw = stt?.transcribe(pcm)?.text ?: ""
+            err = stt?.lastError ?: ""
+        } else {
+            raw = sttMulti?.transcribe(pcm, lang)?.text ?: ""
+            err = sttMulti?.lastError ?: ""
+        }
         val ms = System.currentTimeMillis() - t0
         if (raw.isBlank()) {
             withContext(Dispatchers.Main) {
-                updateUi(ui.copy(status = "nothing recognised · ${stt?.lastError ?: ""}"))
+                updateUi(ui.copy(status = "nothing recognised · $err"))
             }
             return null
         }
-        android.util.Log.e("USER", "talk stt=${ms}ms tone=${(tone.animation * 100).toInt()}% heard='$raw'")
+        android.util.Log.e("USER", "talk lang=${lang.name} stt=${ms}ms tone=${(tone.animation * 100).toInt()}% heard='$raw'")
         return Said(raw, tone)
     }
 
@@ -408,12 +432,12 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
 
     fun demoFinishTalk() {
         viewModelScope.launch(Dispatchers.Default) {
-            recognise()?.let { withContext(Dispatchers.Main) { demoSend(it.text, it.tone) } }
+            recognise(ui.demo.txLang)?.let { withContext(Dispatchers.Main) { demoSend(it.text, it.tone) } }
         }
     }
 
-    /** Recognition exists for Hindi only, so the bench's microphone is real for one language. */
-    fun demoMicUsable(): Boolean = ui.demo.txLang == Lang.HI && stt?.isReady() == true
+    /** The bench's microphone is real for every language [hasVoice] admits. */
+    fun demoMicUsable(): Boolean = hasVoice(ui.demo.txLang)
 
     /** A sentence already written in the language phone 1 is set to, for a turn without typing. */
     fun demoSample(): String = ttsTestSentence(ui.demo.txLang)
@@ -540,16 +564,43 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
             sttErr = s.lastError
             stt = s
             val tStt = System.currentTimeMillis()
+            // Multilingual mic for the other 10 languages. Missing files are not
+            // fatal: WhisperStt reports not-ready and the app stays Hindi-only.
+            val w = WhisperStt(env, res, AppConfig.ORT_THREADS)
+            sttMulti = w
+            val tSttW = System.currentTimeMillis()
             val e = DhVaaniEngine(env, res, AppConfig.ORT_THREADS)
             val tTts = System.currentTimeMillis()
             e.preloadFromDir { it.name }
             tts = e
-            android.util.Log.e("LOAD", "mt=${tMt - t0}ms stt=${tStt - tMt}ms tts=${tTts - tStt}ms " +
-                "refs=${System.currentTimeMillis() - tTts}ms total=${System.currentTimeMillis() - t0}ms")
+            // Burn the Java-side JIT before the first real turn: the same solve costs
+            // 4.6 ms per frame per Euler step cold and 3.4 ms warm, measured on one
+            // sentence, so the first reply of a session pays ~35% for nothing. Two steps of
+            // a two-word sentence is the cheapest thing that touches the FM graph, the mel
+            // frontend, the Vocos head and the iSTFT. Load is already ~80 s in the
+            // background; this adds about two and takes four off the user's first turn.
+            val tWarm = System.currentTimeMillis()
+            if (e.refCount() > 0) runCatching { e.synthesize("ठीक हूँ।", Lang.HI, Voice.M, 2) }
+            e.lastError = ""
+            val ttsWarmMs = System.currentTimeMillis() - tWarm
+            // The microphone engine is NOT warmed with a real clip on purpose: warming the
+            // 3000-frame fp16 encoder cost 75.8 s of load time (67.7 s -> 140.7 s) to move the
+            // identical cost earlier - a slower app, not a faster one. The encoder was never
+            // the problem either: a cold English turn splits into 2.1 s of encoder and 66.2 s
+            // of decode, and that decode half is weights paging plus kernel selection, which
+            // WhisperStt.warm() buys back with two throwaway decoder passes.
+            val wWarmMs = if (w.isReady()) {
+                val t = System.currentTimeMillis(); w.warm(); System.currentTimeMillis() - t
+            } else 0
+            android.util.Log.e("LOAD", "mt=${tMt - t0}ms stt=${tStt - tMt}ms sttW=${tSttW - tStt}ms " +
+                "tts=${tTts - tSttW}ms refs=${System.currentTimeMillis() - tTts}ms warm=${ttsWarmMs}ms " +
+                "wWarm=${wWarmMs}ms total=${System.currentTimeMillis() - t0}ms whisper=${w.isReady()}")
             val secs = String.format("%.1f", (System.currentTimeMillis() - t0) / 1000.0)
+            val nVoice = Lang.values().count { hasVoice(it) }
             val msg = if (sttErr.isBlank() && stt?.isReady() == true && mt?.isReady() == true &&
                 tts?.isReady() == true
-            ) "engines ready · ${tts?.refCount()} voices · up in ${secs}s"
+            ) "engines ready · ${tts?.refCount()} voices · mic in $nVoice langs · up in ${secs}s" +
+                if (w.isReady()) "" else " · whisper missing (Hindi-only mic)"
             else "an engine failed to load · $sttErr"
             withContext(Dispatchers.Main) { updateUi(ui.copy(status = msg)) }
             when (debug) {
@@ -565,8 +616,17 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 "pick" -> pickValidation()
                 "pick32" -> pickValidation32()
                 "fmcost" -> fmCostProbe()
+                // The TTS latency x quality grid: prompt frames against Euler steps.
+                "latbench" -> latBench()
+                // Steps A/B over three seeds, because one take proves nothing about a voice.
+                "seedab" -> seedAb()
                 "refprobe" -> refProbe()
                 "wer" -> werBenchmark()
+                // Multilingual mic check: per-language voice coverage + a Hindi
+                // round-trip (TTS Hindi -> both engines) to prove the wiring.
+                "sttbench" -> sttBench()
+                // Can the Devanagari-only MT dictionary read another script once it is re-based?
+                "mtrebase" -> mtRebase()
                 "ab" -> promptAB()
                 // What the tone anchors are calibrated against: the shipped reference clips read
                 // as if their speakers had just transmitted.
@@ -842,12 +902,212 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Does re-basing a non-Devanagari sentence onto Devanagari code points make the bundled MT
+     * export able to read it? The dictionary says it should - 75,518 Devanagari pieces against 139
+     * Bengali - but the model was trained to see each language in its own script, so a re-based
+     * Bengali sentence is a contradiction: the language token says Bangla, the glyphs say Hindi.
+     * Both tokens are measured against the plain script, and the one that actually translates wins.
+     */
+    private fun mtRebase() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val m = mt
+            if (m == null) {
+                android.util.Log.e("MTREBASE", "no mt engine")
+                return@launch
+            }
+            for (lg in Lang.values()) {
+                if (!com.itantra.walkie.ml.IndicTranslit.needsRebase(lg)) continue
+                val s = ttsTestSentence(lg)
+                val deva = com.itantra.walkie.ml.IndicTranslit.toDeva(s, lg)
+                val t0 = System.currentTimeMillis()
+                val plain = m.translate(s, lg, Lang.MR)
+                val t1 = System.currentTimeMillis()
+                val tokLG = m.translate(deva, lg, Lang.MR)
+                val tokHI = m.translate(deva, Lang.HI, Lang.MR)
+                val t2 = System.currentTimeMillis()
+                android.util.Log.e("MTREBASE", "$lg src      =$s")
+                android.util.Log.e("MTREBASE", "$lg rebased =$deva")
+                android.util.Log.e("MTREBASE", "$lg plain(0)  [${t1 - t0}ms] =$plain")
+                android.util.Log.e("MTREBASE", "$lg tokLG     [${t2 - t1}ms] =$tokLG")
+                android.util.Log.e("MTREBASE", "$lg tokHI                =$tokHI")
+            }
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "mt rebase probe done")) }
+        }
+    }
+
     private fun md5(pcm: FloatArray): String {
         val bb = java.nio.ByteBuffer.allocate(pcm.size * 4)
             .order(java.nio.ByteOrder.LITTLE_ENDIAN)
         for (v in pcm) bb.putFloat(v)
         return java.security.MessageDigest.getInstance("MD5").digest(bb.array())
             .joinToString("") { "%02x".format(it) }
+    }
+
+    /**
+     * Euler steps A/B over seeds, run from adb with `--es debug seedab`.
+     *
+     * [latBench] says 6 steps solves a third faster than 8 and a shorter prompt again, but
+     * the FM is seed-sensitive - one take at one seed moves the measured fundamental between
+     * 121 and 157 Hz - so a single sample per setting proves nothing about the voice. This
+     * walks the prompt cap x seed grid at one step count, saving every take, so the host
+     * analysers (scripts/pitch.js, scripts/spectral.js) compare distributions. Latency is
+     * only worth buying with a lever that leaves the man in the chair.
+     */
+    private fun seedAb() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val e = tts ?: return@launch
+            val base = getApplication<Application>().filesDir
+            val text = "नमस्कार, आप कैसे हैं? मैं ठीक हूँ, धन्यवाद।"
+            val refPcm = runCatching {
+                val w = com.itantra.walkie.ml.WavIO.readBytes(bundled.bytes("refs/ref_hi_m.wav"))
+                if (w.sr != AppConfig.TTS_SR)
+                    com.itantra.walkie.ml.WavIO.resample(w.samples, w.sr, AppConfig.TTS_SR) else w.samples
+            }.getOrNull() ?: return@launch
+            val refTxt = runCatching { bundled.text("refs/ref_hi_m.txt").trim() }.getOrNull() ?: ""
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "seedab running…")) }
+            for (cap in listOf(0, 160, 96)) {
+                e.promptCap = cap
+                e.preloadRef(Lang.HI, Voice.M, refPcm, refTxt)
+                for (seed in listOf(11L, 23L, 37L)) {
+                    val t0 = System.currentTimeMillis()
+                    val pcm = e.synthesize(text, Lang.HI, Voice.M, 6, seed = seed)
+                    val ms = System.currentTimeMillis() - t0
+                    try {
+                        if (pcm.isNotEmpty()) com.itantra.walkie.ml.WavIO.write16(
+                            File(base, "seedab_c${cap}_$seed.wav"), AppConfig.TTS_SR, pcm
+                        )
+                    } catch (_: Exception) {}
+                    val rd = com.itantra.walkie.ml.Prosody.measure(pcm, AppConfig.TTS_SR)
+                    android.util.Log.e(
+                        "SEEDAB", "cap=$cap seed=$seed ms=$ms cond=${e.lastCondFrames} gen=${e.lastFrames} " +
+                            "prompt=${e.lastCondFrames - e.lastFrames} " +
+                            "fm=${e.msFm} spread=${"%.2f".format(rd.spread)} density=${"%.2f".format(rd.density)} " +
+                            "dyn=${"%.2f".format(rd.dynamics)} recon=${e.lastReconErr} err=${e.lastError}"
+                    )
+                }
+            }
+            e.promptCap = AppConfig.TTS_PROMPT_MAX_FRAMES
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "seedab done")) }
+        }
+    }
+
+    /**
+     * Latency x quality grid for the TTS solve, run from adb with `--es debug latbench`.
+     *
+     * One turn costs 18.5 s on the demo device, and the solve is 98% of it: cost is
+     * (prompt frames + generated frames) x Euler steps, so the two numbers the app can
+     * still choose are the prompt cap and the step count. This sweeps both on the SAME
+     * sentence and reports the quality proxies next to the milliseconds - F0 spread,
+     * speech density and energy dynamics from the same measurer that calibrates the tone
+     * painting, plus the solve's own prompt-reconstruction error - because a faster voice
+     * that has gone flat is not a faster voice. Wavs land in filesDir for listening.
+     */
+    private fun latBench() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val base = getApplication<Application>().filesDir
+            val e = tts ?: return@launch
+            val text = "नमस्कार, आप कैसे हैं? मैं ठीक हूँ, धन्यवाद।"
+            val refPcm = runCatching {
+                val w = com.itantra.walkie.ml.WavIO.readBytes(bundled.bytes("refs/ref_hi_m.wav"))
+                if (w.sr != AppConfig.TTS_SR)
+                    com.itantra.walkie.ml.WavIO.resample(w.samples, w.sr, AppConfig.TTS_SR) else w.samples
+            }.getOrNull() ?: return@launch
+            val refTxt = runCatching { bundled.text("refs/ref_hi_m.txt").trim() }.getOrNull() ?: ""
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "latbench running…")) }
+            // The yardstick: the donor clip's own reading of the same three axes. Every
+            // solve below is judged against a human recording, not against another solve.
+            val rr = com.itantra.walkie.ml.Prosody.measure(refPcm, AppConfig.TTS_SR)
+            android.util.Log.e(
+                "LAT", "ref spread=${"%.2f".format(rr.spread)} density=${"%.2f".format(rr.density)} " +
+                    "dyn=${"%.2f".format(rr.dynamics)} voiced=${rr.voiced} " +
+                    "audio=${"%.1f".format(refPcm.size / AppConfig.TTS_SR.toDouble())}s"
+            )
+            for (cap in listOf(AppConfig.TTS_PROMPT_MAX_FRAMES, 160, 96)) {
+                e.promptCap = cap
+                e.preloadRef(Lang.HI, Voice.M, refPcm, refTxt)
+                for (steps in listOf(8, 6, 4)) {
+                    val t0 = System.currentTimeMillis()
+                    val pcm = e.synthesize(text, Lang.HI, Voice.M, steps)
+                    val ms = System.currentTimeMillis() - t0
+                    val rd = com.itantra.walkie.ml.Prosody.measure(pcm, AppConfig.TTS_SR)
+                    var pk = 0f; var sq = 0.0
+                    for (s in pcm) { val a = if (s < 0) -s else s; if (a > pk) pk = a; sq += s.toDouble() * s }
+                    val rms = if (pcm.isEmpty()) 0.0 else Math.sqrt(sq / pcm.size)
+                    try {
+                        if (pcm.isNotEmpty()) com.itantra.walkie.ml.WavIO.write16(
+                            File(base, "lat_c${cap}_s$steps.wav"), AppConfig.TTS_SR, pcm
+                        )
+                    } catch (_: Exception) {}
+                    android.util.Log.e(
+                        "LAT", "cap=$cap steps=$steps ms=$ms audio=${"%.1f".format(pcm.size / AppConfig.TTS_SR.toDouble())}s " +
+                            "chunks=${e.lastChunks} gen=${e.lastFrames} cond=${e.lastCondFrames} " +
+                            "enc=${e.msEnc} fm=${e.msFm} voc=${e.msVoc} head=${e.msHead} istft=${e.msIstft} " +
+                            "ms/step=${if (e.lastStepMs.isEmpty()) 0 else e.lastStepMs.sum() / e.lastStepMs.size}"
+                    )
+                    android.util.Log.e(
+                        "LAT", "cap=$cap steps=$steps quality spread=${"%.2f".format(rd.spread)} " +
+                            "density=${"%.2f".format(rd.density)} dyn=${"%.2f".format(rd.dynamics)} " +
+                            "voiced=${rd.voiced} peak=${"%.2f".format(pk)} rms=${"%.4f".format(rms)} " +
+                            "mel=[${e.lastMelStats}] recon=${e.lastReconErr} err=${e.lastError}"
+                    )
+                }
+            }
+            e.promptCap = AppConfig.TTS_PROMPT_MAX_FRAMES
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "latbench done")) }
+        }
+    }
+
+    /**
+     * Multilingual mic check, run from adb with `--es debug sttbench`. Logs per-language
+     * coverage, then round-trips every bundled reference clip through the engine that
+     * would have to read it - the Conformer for Hindi, Whisper-base for the rest - and
+     * prints the hypothesis next to the transcript that ships beside the clip. This is
+     * the only place the app's language claims are measured rather than asserted, so it
+     * reports the languages it has *gated off* too: a refused engine should look refused
+     * here, not silently missing.
+     */
+    private fun sttBench() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val w = sttMulti
+            android.util.Log.e("STT", "ready hi=${stt?.isReady()} whisper=${w?.isReady()} err=${w?.lastError}")
+            android.util.Log.e(
+                "STT", "voice " + Lang.values().joinToString(" ") { "${it.name}=${hasVoice(it)}/${w?.covers(it) == true}" }
+            )
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "sttbench running…")) }
+            try {
+                val hi = com.itantra.walkie.ml.WavIO.readBytes(bundled.bytes("refs/ref_hi_m.wav"))
+                val pcmHi = if (hi.sr != AppConfig.STT_SR)
+                    com.itantra.walkie.ml.WavIO.resample(hi.samples, hi.sr, AppConfig.STT_SR) else hi.samples
+                val s0 = System.currentTimeMillis()
+                val hiHyp = stt?.transcribe(pcmHi)?.text ?: ""
+                android.util.Log.e("STT", "HI conformer ms=${System.currentTimeMillis() - s0} err=${stt?.lastError}")
+                android.util.Log.e("STT", "HI REF=${bundled.text("refs/ref_hi_m.txt").trim()}")
+                android.util.Log.e("STT", "HI HYP=$hiHyp")
+                if (w != null) {
+                    for (lg in Lang.values()) {
+                        if (lg == Lang.HI) continue
+                        val ref = "refs/ref_${lg.name.lowercase()}_m"
+                        val wav = runCatching { bundled.bytes("$ref.wav") }.getOrNull() ?: continue
+                        val rd = com.itantra.walkie.ml.WavIO.readBytes(wav)
+                        val pcm = if (rd.sr != AppConfig.STT_SR)
+                            com.itantra.walkie.ml.WavIO.resample(rd.samples, rd.sr, AppConfig.STT_SR) else rd.samples
+                        val s1 = System.currentTimeMillis()
+                        val r = w.transcribe(pcm, lg, maxLen = 40)
+                        android.util.Log.e(
+                            "STT", "${lg.name} whisper ms=${System.currentTimeMillis() - s1} " +
+                                "enc=${w.lastMsEnc} dec=${w.lastMsDec} steps=${w.lastStepsPast}p/${w.lastStepsFull}f " +
+                                "use=${hasVoice(lg)} ok=${r.text.isNotEmpty()} err=${w.lastError}"
+                        )
+                        android.util.Log.e("STT", "${lg.name} REF=${runCatching { bundled.text("$ref.txt").trim() }.getOrNull()}")
+                        android.util.Log.e("STT", "${lg.name} HYP=${if (r.text.isNotEmpty()) r.text else r.raw}")
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("STT", "bench fail ${e.message}")
+            }
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "sttbench done")) }
+        }
     }
 
     /**
@@ -1368,5 +1628,5 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
     fun setSoftMale(on: Boolean) { updateUi(ui.copy(softMale = on)) }
     fun setStatus(s: String) { updateUi(ui.copy(status = s)) }
 
-    override fun onCleared() { stt?.close(); mt?.close(); tts?.close(); env.close() }
+    override fun onCleared() { stt?.close(); sttMulti?.close(); mt?.close(); tts?.close(); env.close() }
 }

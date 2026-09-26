@@ -43,12 +43,19 @@ object Fft {
         if (invert) for (i in 0 until n) { re[i] = re[i] / n; im[i] = im[i] / n }
     }
 
-    /** Analysis: reflect-padded (center=true), windowed frames -> power spectra [frames][nfft/2+1]. */
-    fun stftPower(pcm: FloatArray, win: FloatArray, hop: Int, nfft: Int): Array<DoubleArray> {
+    /**
+     * Analysis: windowed frames -> power spectra [frames][nfft/2+1], centred like torch.stft.
+     *
+     * [reflect] picks the edge policy, and the two ASR frontends disagree on it: Whisper's
+     * log-mel comes from `pad_mode="reflect"` (torch's default), NeMo's fbank from
+     * `pad_mode="constant"`. Feeding a model the other one's boundary is a silent feature
+     * mismatch - the first and last frames are the ones that touch it.
+     */
+    fun stftPower(pcm: FloatArray, win: FloatArray, hop: Int, nfft: Int, reflect: Boolean = true): Array<DoubleArray> {
         val pad = nfft / 2
         val ext = FloatArray(pcm.size + 2 * pad)
         for (i in pcm.indices) ext[i + pad] = pcm[i]
-        for (i in 0 until pad) { ext[pad - 1 - i] = pcm.getOrElse(1 + i) { 0f }; ext[pad + pcm.size + i] = pcm.getOrElse(pcm.size - 2 - i) { 0f } }
+        if (reflect) for (i in 0 until pad) { ext[pad - 1 - i] = pcm.getOrElse(1 + i) { 0f }; ext[pad + pcm.size + i] = pcm.getOrElse(pcm.size - 2 - i) { 0f } }
         val frames = 1 + pcm.size / hop
         val bins = nfft / 2 + 1
         val wlen = win.size

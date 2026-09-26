@@ -49,7 +49,19 @@ class TranslatorEngine(
     fun translateWith(text: String, src: Lang, tgt: Lang, conv: Int, maxLen: Int = 64): String {
         if (src == tgt || text.isBlank() || !isReady()) return text
         try {
-            val body = tok.encode(text) + listOf(tok.eos)
+            // The same dictionary asymmetry that forces the output re-base below exists on the
+            // way in: dict.SRC holds 75,518 Devanagari pieces against 139 Bengali and 88 Kannada,
+            // so a sentence written in any other block arrives as <unk> and the model invents
+            // something. Measured on device: Bengali came back as "নোভ्हेंबरমধ্যে" twenty-two
+            // times over nine seconds, Kannada as a hallucinated date, Malayalam and Odia as
+            // <unk> noise. Re-basing the input onto Devanagari first - the blocks are
+            // akshara-aligned, so every consonant and matra keeps its sound - turns those same
+            // sentences into correct Marathi, for all eight non-Devanagari languages including
+            // Odia. The true source token is kept: forcing the Hindi token instead made Gujarati
+            // answer "हे मला मनोरंजक वाटते" for "I am well" and left Telugu words untranslated.
+            val body = tok.encode(
+                if (IndicTranslit.needsRebase(src)) IndicTranslit.toDeva(text, src) else text
+            ) + listOf(tok.eos)
             val s = tok.langId(src.tag); val t = tok.langId(tgt.tag)
             val srcIds = when (conv) {
                 1 -> listOf(t) + body // target code only (previous behaviour)

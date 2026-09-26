@@ -29,6 +29,8 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
     // per-stage wall clock (ms) of the last synthesize(), for latency diagnosis
     var msEnc = 0L; var msFm = 0L; var msVoc = 0L; var msHead = 0L; var msIstft = 0L
     var lastFrames = 0; var lastCondFrames = 0
+    /** Sentences the last reply was split into: every one of them carries the prompt region. */
+    var lastChunks = 0
     var lastStepMs: List<Long> = emptyList()
     var lastMelStats: String = ""
     // Text-condition / velocity probe for FM-solve diagnosis. The vocoder path
@@ -43,6 +45,13 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
     var lastPromptStats = ""
     private val nThreads = threads.coerceIn(1, 8)
     private val opts = OrtSession.SessionOptions().apply { setIntraOpNumThreads(threads) }
+
+    /**
+     * Frames of reference clip a solve may carry. The prompt region rides through every
+     * Euler step, so this number is a flat per-utterance latency cost, and [debug latbench]
+     * is what decides it against voice quality. Defaults to the shipped cap.
+     */
+    var promptCap = AppConfig.TTS_PROMPT_MAX_FRAMES
     // Sessions come straight out of the APK: copying 812 MB of models into filesDir made
     // the install hold every weight twice.
     private fun openSess(n: String) = try {
@@ -97,7 +106,7 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
         var mel = trimSilentFrames(refMel(pcm))
         if (mel.isEmpty()) mel = refMel(pcm)
         var ids = textToIds(text)
-        val max = AppConfig.TTS_PROMPT_MAX_FRAMES
+        val max = promptCap
         if (mel.size > max && max > 0) {
             // Region-matched crop: the mel window [start, start+max) pairs with the
             // proportional token window, never with the head tokens. Centered, not
@@ -355,19 +364,23 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
         // contour stretched over the whole paragraph. Renders join by crossfade so the
         // boundary is inaudible.
         val chunks = splitSentences(clean)
+        lastChunks = chunks.size
         // Stage clocks are per synthChunk call; sum them so the breakdown accounts for
         // the whole utterance rather than silently describing only its last sentence.
         var tEnc = 0L; var tFm = 0L; var tVoc = 0L; var tHead = 0L; var tIstft = 0L
+        var tCond = 0; var tGen = 0
         val tSteps = ArrayList<Long>()
         var acc = FloatArray(0)
         for (c in chunks) {
             val pcm = synthChunk(c, lang, voice, nfe, guidance, seed, promptOverride, candidates)
             if (pcm.isEmpty()) { lastError = "tts chunk failed: $lastError"; return FloatArray(0) }
             tEnc += msEnc; tFm += msFm; tVoc += msVoc; tHead += msHead; tIstft += msIstft
+            tCond += lastCondFrames; tGen += lastFrames
             tSteps += lastStepMs
             acc = if (acc.isEmpty()) pcm else xfade(acc, pcm, XFADE_SAMPLES)
         }
         msEnc = tEnc; msFm = tFm; msVoc = tVoc; msHead = tHead; msIstft = tIstft
+        lastCondFrames = tCond; lastFrames = tGen
         lastStepMs = tSteps
         return acc
     }
@@ -422,9 +435,10 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
         seed: Long?, promptOverride: Pair<Lang, Voice>?, candidates: Int = 1,
     ): FloatArray {
         if (text.isBlank() || !isReady()) return FloatArray(0)
-        // Fewer than ~8 Euler steps cannot resolve formant movement: output goes
-        // flat/monotone (robotic). Clamp the floor; the UI turbo/full presets sit above it.
-        val steps = nfe.coerceAtLeast(8)
+        // Fewer than ~6 Euler steps cannot resolve formant movement: output goes
+        // flat/monotone. The floor sits where [debug latbench] measured the collapse,
+        // not above it, so the sweep can see the shape of the curve.
+        val steps = nfe.coerceAtLeast(4)
         try {
             val pl = promptOverride?.first ?: lang
             val pv = promptOverride?.second ?: voice
@@ -851,10 +865,15 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
         return "min=%.2f max=%.2f mean=%.2f sd=%.2f".format(mn, mx, mean, kotlin.math.sqrt(ss / n - mean * mean))
     }
 
-    /** Run [work] for rows 0..n-1 across the intra-op threads. */
+    /**
+     * Run [work] for rows 0..n-1 in parallel. Deliberately NOT capped at [nThreads]: every
+     * caller is pure Java between two ORT runs, so the intra-op pool is idle here and the
+     * whole device is free. The 512x1026 Vocos head measured 948 ms on 2 threads for a
+     * 327-frame reply - a third of a second is the difference between a 3 s and a 2 s turn.
+     */
     private fun parallelRows(n: Int, work: (Int) -> Unit) {
-        if (nThreads == 1 || n < 2) { for (f in 0 until n) work(f); return }
-        val nt = nThreads.coerceAtMost(n)
+        val nt = minOf(n, Runtime.getRuntime().availableProcessors().coerceAtLeast(1))
+        if (nt < 2) { for (f in 0 until n) work(f); return }
         val per = (n + nt - 1) / nt
         val ts = (0 until nt).map { tid ->
             Thread {

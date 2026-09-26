@@ -1,9 +1,12 @@
-# Single-model MT + fast TTS. Run once; copies to <filesDir>/models/.
+# Single-model MT + fast TTS + bilingual STT. Run once; copies to <filesDir>/models/.
 # pip install huggingface_hub optimum[onnxruntime] transformers"<5" nemo_toolkit torch onnx onnxruntime
 from huggingface_hub import snapshot_download
 MT = "ai4bharat/indictrans2-indic-indic-dist-320M"   # single, covers en<->indic + indic<->indic (11 langs)
 STT = "ai4bharat/indicconformer_stt_hi_hybrid_ctc_rnnt_large"
 TTS = "ai4bharat/IndicF5"
+STT_W = "onnx-community/whisper-base"  # multilingual mic for the other 10 langs; INT8 3-file only
+# (node scripts/fetch-whisper-base.mjs pulls encoder/decoder/with_past INT8 + tokenizer.json;
+#  node scripts/gen-whisper-mel.mjs builds the Hann/mel constants - no export needed)
 print("MT:", snapshot_download(MT))
 print("STT:", snapshot_download(STT))
 print("TTS:", snapshot_download(TTS))
