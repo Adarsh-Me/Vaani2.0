@@ -81,6 +81,12 @@ data class DemoState(
     val txLang: Lang = Lang.HI,
     val rxLang: Lang = Lang.MR,
     val rxVoice: Voice = Voice.M,
+    /**
+     * Read phone 1's language off the words instead of trusting the picker. The microphone does
+     * not need the choice - SraVaani decodes every language through one graph - only the
+     * translation pair does, and the transcript already carries which language it is in.
+     */
+    val txAuto: Boolean = false,
     /** Stage split of the last turn that crossed, in seconds. */
     val wire: String = "",
     /** How that turn was answered, in the words the bench shows next to the pair. */
@@ -458,11 +464,26 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         val t = text.trim()
         if (t.isEmpty()) return
         val d = ui.demo
+        // Auto: phone 1's language is read off these words rather than taken from the picker.
+        // The microphone never needed the choice - one graph decodes all of them - only the
+        // translation pair does, and the transcript already says what language it is in.
+        val read = if (d.txAuto) com.itantra.walkie.ml.LangId.detect(t, fallback = d.txLang)
+        else com.itantra.walkie.ml.LangId.Guess(
+            d.txLang, com.itantra.walkie.ml.LangId.How.NONE
+        )
+        val decided = read.how != com.itantra.walkie.ml.LangId.How.NONE
+        val from = if (d.txAuto) read.lang else d.txLang
         appendToThread(
             DEMO_TX,
             Msg(
                 id = ++msgSeq, outgoing = true, text = t, who = "phone 1",
-                path = "on this handset · ${d.txLang.native} → ${d.rxLang.native}",
+                // The detection is named on the line: an auto answer that quietly agrees with
+                // the picker is indistinguishable from one that never ran.
+                path = when {
+                    !d.txAuto -> "on this handset · ${d.txLang.native} → ${d.rxLang.native}"
+                    decided -> "auto-read as ${read.lang.native} · on this handset → ${d.rxLang.native}"
+                    else -> "auto found nothing to read · taken as ${d.txLang.native} → ${d.rxLang.native}"
+                },
                 status = "Not on the air — the bench played both ends",
                 statusOk = false,
                 toneLabel = toneMark(tone),
@@ -471,12 +492,12 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         )
         updateUi(ui.copy(
             lastText = t,
-            demo = d.copy(running = true, wire = "recognised · translating ${d.txLang.label} → ${d.rxLang.label}…"),
+            demo = d.copy(running = true, wire = "recognised · translating ${from.label} → ${d.rxLang.label}…"),
             status = "on the bench · phone 1 → phone 2"
         ))
         runReceive(
             text = t,
-            fromLang = d.txLang,
+            fromLang = from,
             toLang = d.rxLang,
             voice = d.rxVoice,
             channelId = DEMO_RX,
@@ -656,8 +677,11 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
             putString("demo_src", d.txLang.name)
             putString("demo_tgt", d.rxLang.name)
             putString("demo_voice", d.rxVoice.name)
+            putBoolean("demo_auto", d.txAuto)
         }.apply()
     }
+
+    fun setDemoTxAuto(on: Boolean) = setDemo(ui.demo.copy(txAuto = on))
 
     private fun restoreDemo() {
         val d = ui.demo.copy(
@@ -667,6 +691,7 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 .getOrDefault(Lang.MR),
             rxVoice = runCatching { Voice.valueOf(prefs.getString("demo_voice", "M") ?: "M") }
                 .getOrDefault(Voice.M),
+            txAuto = prefs.getBoolean("demo_auto", false),
         )
         updateUi(ui.copy(demo = d))
     }
@@ -782,6 +807,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 // Multilingual mic check: per-language voice coverage + a Hindi
                 // round-trip (TTS Hindi -> both engines) to prove the wiring.
                 "sttbench" -> sttBench()
+                // Which language was spoken, told by the transcript rather than by the user:
+                // script, lexicon and translator confidence scored against the clip filenames.
+                "langid" -> langIdBench()
                 // Can the Devanagari-only MT dictionary read another script once it is re-based?
                 "mtrebase" -> mtRebase()
                 "ab" -> promptAB()
@@ -1223,6 +1251,110 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
             }
             applyPromptCap() // back to whatever the mode actually ships with
             withContext(Dispatchers.Main) { updateUi(ui.copy(status = "latbench done")) }
+        }
+    }
+
+    /**
+     * Can the app tell what language was spoken without being told? Measured end to end on the
+     * handset: every reference clip this APK ships goes through the real microphone, and the
+     * transcript is then read by three separate judges.
+     *
+     * - **script** - which Unicode block the letters come from. Answers eight languages outright
+     *   and refuses Devanagari, where it genuinely cannot tell Hindi from Marathi.
+     * - **lexicon** - how many Hindi-marked and Marathi-marked function words the sentence uses.
+     * - **mt score** - the translator run twice over the same words, told the source is Hindi and
+     *   then that it is Marathi, compared by mean log-probability of what it produced
+     *   ([com.itantra.walkie.ml.TranslatorEngine.lastScore]). The model was trained with the
+     *   source language's own token, so the wrong one should cost it confidence.
+     *
+     * The truth is the filename. Each judge is scored on its own, and on the Devanagari subset
+     * alone, because that aggregate is where a good Bengali/Telugu rate could otherwise hide a
+     * broken Hindi/Marathi one.
+     */
+    private fun langIdBench() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val w = sttMulti
+            val m = mt
+            if (w == null || !w.isReady()) {
+                android.util.Log.e("LID", "no microphone engine"); return@launch
+            }
+            withContext(Dispatchers.Main) { updateUi(ui.copy(status = "language id bench…")) }
+            var clips = 0
+            var scriptAsked = 0; var scriptRight = 0
+            var lexRight = 0
+            var detectRight = 0
+            var deva = 0; var devaLexRight = 0; var devaMtRight = 0
+            val skipped = ArrayList<String>()
+            for (lg in Lang.values()) {
+                for (suf in listOf("_m", "_f", "")) {
+                    val ref = "refs/ref_${lg.name.lowercase()}$suf"
+                    val wav = try {
+                        bundled.bytes("$ref.wav")
+                    } catch (e: Exception) {
+                        skipped += "read:${lg.name}$suf=${e.javaClass.simpleName}:${e.message}"
+                        continue
+                    }
+                    val rd = com.itantra.walkie.ml.WavIO.readBytes(wav)
+                    val pcm = if (rd.sr != AppConfig.STT_SR)
+                        com.itantra.walkie.ml.WavIO.resample(rd.samples, rd.sr, AppConfig.STT_SR)
+                    else rd.samples
+                    val hyp = try {
+                        w.transcribe(pcm, lg).text
+                    } catch (e: Exception) {
+                        skipped += "stt:${lg.name}$suf=${e.javaClass.simpleName}:${e.message}"
+                        continue
+                    }
+                    if (hyp.isBlank()) {
+                        skipped += "empty:${lg.name}$suf"
+                        continue
+                    }
+                    clips++
+                    val script = com.itantra.walkie.ml.LangId.byScript(hyp)
+                    val lex = com.itantra.walkie.ml.LangId.byLexicon(hyp, fallback = lg)
+                    val both = com.itantra.walkie.ml.LangId.detect(hyp, fallback = lg)
+                    if (script != null) { scriptAsked++; if (script == lg) scriptRight++ }
+                    if (lex.lang == lg && lex.how != com.itantra.walkie.ml.LangId.How.NONE) lexRight++
+                    if (both.lang == lg) detectRight++
+                    var mtLine = ""
+                    if (script == null) {
+                        deva++
+                        if (lex.lang == lg && lex.how != com.itantra.walkie.ml.LangId.How.NONE) devaLexRight++
+                        if (m != null && m.isReady()) {
+                            // Both candidates must target a third language: the pair the phone
+                            // would actually translate into is unknowable here, and Telugu is a
+                            // language neither candidate can be mistaken for.
+                            val hi = m.translate(hyp, Lang.HI, Lang.TE) to m.lastScore
+                            val mr = m.translate(hyp, Lang.MR, Lang.TE) to m.lastScore
+                            val pick = if (hi.second >= mr.second) Lang.HI else Lang.MR
+                            if (pick == lg) devaMtRight++
+                            mtLine = " mtHI=${"%.3f".format(hi.second)} mtMR=${"%.3f".format(mr.second)}" +
+                                " mt=${pick.name}${if (pick == lg) "✓" else "✗"}"
+                        }
+                    }
+                    android.util.Log.e(
+                        "LID", "${lg.name}$suf · script=${script?.name ?: "-"}" +
+                            "${if (script == lg) "✓" else if (script != null) "✗" else ""} " +
+                            "lex=${lex.lang.name}${if (lex.how == com.itantra.walkie.ml.LangId.How.NONE) "?" else ""}" +
+                            "(${lex.margin}) hi=${com.itantra.walkie.ml.LangId.devaMarkers(hyp).first}" +
+                            "/mr=${com.itantra.walkie.ml.LangId.devaMarkers(hyp).second}" +
+                            "${if (lex.lang == lg && script == null) "✓" else ""} " +
+                            "detect=${both.lang.name}${if (both.lang == lg) "✓" else "✗"}$mtLine · «$hyp»"
+                    )
+                }
+            }
+            android.util.Log.e(
+                "LID", "TOTAL clips=$clips " +
+                    "script answered=$scriptAsked right=$scriptRight " +
+                    "lexicon right=$lexRight detect right=$detectRight " +
+                    "| devanagari=$deva lex=${devaLexRight}/$deva mt=${devaMtRight}/$deva " +
+                    "| skipped=${skipped.size} ${skipped.take(12)}"
+            )
+            withContext(Dispatchers.Main) {
+                updateUi(ui.copy(
+                    status = "lang id: $detectRight/$clips detected · devanagari " +
+                        "lex $devaLexRight/$deva, mt score $devaMtRight/$deva"
+                ))
+            }
         }
     }
 

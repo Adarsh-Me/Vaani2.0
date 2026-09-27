@@ -37,6 +37,16 @@ class TranslatorEngine(
     fun isReady() = enc != null && dec != null
     var lastError: String = ""
 
+    /**
+     * Mean log-probability the last [translate] walk gave its own output, or
+     * [Float.NEGATIVE_INFINITY] if it never decoded. This is what turns "is this Hindi or
+     * Marathi?" from an opinion into a measurement: IndicTrans2 is trained with the *source*
+     * language's token in front of the sentence, so feeding the wrong token for the same words
+     * costs probability. Run the pair both ways and compare - the gap is a score, not a guess.
+     */
+    var lastScore: Float = Float.NEGATIVE_INFINITY
+        private set
+
     fun translate(text: String, src: Lang, tgt: Lang, maxLen: Int = 64): String =
         translateWith(text, src, tgt, CONV, maxLen)
 
@@ -48,6 +58,7 @@ class TranslatorEngine(
      * pair answer in Devanagari (Marathi hid it because Marathi IS Devanagari).
      */
     fun translateWith(text: String, src: Lang, tgt: Lang, conv: Int, maxLen: Int = 64): String {
+        lastScore = Float.NEGATIVE_INFINITY
         if (src == tgt || text.isBlank() || !isReady()) return text
         try {
             // The same dictionary asymmetry that forces the output re-base below exists on the
@@ -92,6 +103,13 @@ class TranslatorEngine(
 
     private fun greedy(flatH: FloatArray, encLen: Int, prefix: List<Int>, maxLen: Int): String {
         val d = dec ?: return ""
+        // Mean log-probability of the tokens this walk chose - see [lastScore].
+        var acc = 0.0
+        var steps = 0
+        fun done(s: String): String {
+            lastScore = if (steps > 0) (acc / steps).toFloat() else Float.NEGATIVE_INFINITY
+            return s
+        }
         val out = ArrayList(prefix)
         val encMask = OnnxTensor.createTensor(env, LongBuffer.wrap(LongArray(encLen) { 1L }), longArrayOf(1, encLen.toLong()))
         try {
@@ -116,13 +134,19 @@ class TranslatorEngine(
                     val row = logits[0][logits[0].size - 1]
                     var bi = 0; var bv = Float.NEGATIVE_INFINITY
                     for (i in row.indices) if (row[i] > bv) { bv = row[i]; bi = i }
+                    // log p(chosen) = chosen - logsumexp(all). The chosen token is the max, so the
+                    // sum is taken against it and every term is <= 1.
+                    var sum = 0.0
+                    for (v in row) sum += kotlin.math.exp((v - bv).toDouble())
+                    acc -= kotlin.math.ln(sum)
+                    steps++
                     next = bi
                 }
                 for (t in made) if (t !== encMask) t.close()
-                if (next == tok.eos) return tok.decode(out.drop(prefix.size))
+                if (next == tok.eos) return done(tok.decode(out.drop(prefix.size)))
                 out += next
             }
-            return tok.decode(out.drop(prefix.size))
+            return done(tok.decode(out.drop(prefix.size)))
         } finally {
             try { encMask.close() } catch (_: Exception) {}
         }

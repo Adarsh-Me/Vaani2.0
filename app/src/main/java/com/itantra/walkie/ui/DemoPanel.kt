@@ -91,6 +91,18 @@ fun DemoPanel(vm: WalkieViewModel, requestMic: () -> Boolean) {
                 enabledFor = { it != d.rxLang },
                 noteFor = { if (it == d.rxLang) "phone 2 already hears in this" else null },
             )
+            Spacer(Modifier.height(4.dp))
+            // The microphone never needed this choice - one graph decodes every language - so the
+            // picker is only ever a statement about what to translate *from*. Auto reads that off
+            // the words instead, and the picker stays as the fallback when the words decide
+            // nothing, which is said on the line rather than hidden.
+            SwitchRow(
+                title = "Detect phone 1's language",
+                desc = if (d.txAuto) "read from the words · falls back to ${d.txLang.label}"
+                else "off · always translated as ${d.txLang.label}",
+                checked = d.txAuto,
+                onChange = { vm.setDemoTxAuto(it) },
+            )
             Spacer(Modifier.height(7.dp))
             BenchThread(
                 msgs = vm.threadFor(WalkieViewModel.DEMO_TX),
@@ -411,7 +423,7 @@ private fun WireRow(vm: WalkieViewModel) {
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                "${d.txLang.label} → ${d.rxLang.label} · " +
+                (if (d.txAuto) "auto" else d.txLang.label) + " → ${d.rxLang.label} · " +
                     d.toneLabel.ifBlank { "on this phone" },
                 style = VaniType.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                 color = VaniColors.InkDim,
