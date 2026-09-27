@@ -64,16 +64,19 @@ interface MeshTransport {
     /**
      * @param tone how the sender's voice sounded while the words were said. A neutral tone adds
      * nothing to the frame, so an ordinary transmission is byte-for-byte what it always was.
-     * @return false when the frame could not be handed to the radio at all.
+     * @return the number of bytes the text became on air - body plus tone framing, before
+     * fragmentation - or 0 when the frame could not be handed to the radio at all. The console
+     * prints this, so it is the count of bytes that actually left, not the length of the text.
      */
-    fun send(addr: Address, text: String, tone: Tone = Tone.NEUTRAL): Boolean
+    fun send(addr: Address, text: String, tone: Tone = Tone.NEUTRAL): Int
 
     /**
      * Set by the app: invoked for inbound traffic with the sending node's id, the channel the
      * frame belongs on - [Address.ALL_ID] for a broadcast, this phone's own address for a direct
-     * one - and the tone that arrived with it, neutral when the sender sent none. A broadcast has
-     * to land on the broadcast channel, not in a private thread.
+     * one - the tone that arrived with it (neutral when the sender sent none), and the size of the
+     * frame it came in. A broadcast has to land on the broadcast channel, not in a private thread.
      */
-    var listener: ((fromPeerId: String, channelId: String, text: String, tone: Tone) -> Unit)?
+    var listener:
+        ((fromPeerId: String, channelId: String, text: String, tone: Tone, onAirBytes: Int) -> Unit)?
 }
 

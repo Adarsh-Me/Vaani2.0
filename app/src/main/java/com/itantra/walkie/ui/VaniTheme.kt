@@ -147,6 +147,8 @@ internal object VaniLabel {
     val tone = mono(10, FontWeight.Normal, VaniColors.InkDim, 0.3f)
     val arrow = mono(10, FontWeight.Normal, VaniColors.InkDim, 1f)
     val badge = mono(9, FontWeight.Normal, VaniColors.InkDim, 0.55f)
+    /** A measured value, mono at reading size: the handset meter rows. Tabular by family. */
+    val readout = mono(17, FontWeight.Bold, VaniColors.Ink, -0.4f)
     val button = body(14, FontWeight.Medium, VaniColors.Ink, -0.07f)
     val buttonStrong = body(14, FontWeight.Bold, VaniColors.OnSignal, -0.07f)
 }

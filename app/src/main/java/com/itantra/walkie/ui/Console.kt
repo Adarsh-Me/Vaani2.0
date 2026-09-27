@@ -69,6 +69,7 @@ import com.itantra.walkie.Msg
 import com.itantra.walkie.Pane
 import com.itantra.walkie.WalkieViewModel
 import com.itantra.walkie.net.Address
+import kotlin.math.roundToInt
 import com.itantra.walkie.net.RadioState
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -185,6 +186,7 @@ private fun MeshPane(
                     Spacer(Modifier.height(16.dp))
                 }
             }
+            LoadCard(vm)
             YouCard(vm)
         }
     }
@@ -224,7 +226,9 @@ private fun RadioOffPane(
 @Composable
 private fun PeerSection(vm: WalkieViewModel, reached: Int, now: Long) {
     val peers = vm.mesh.peers
-    Spacer(Modifier.height(4.dp))
+    // The scan line and the "nothing in range" notice are both full-width blocks; 4dp under them
+    // reads as one card touching the next.
+    Spacer(Modifier.height(16.dp))
     // While the first sweep is still out there the scan line above already says so; a second
     // "listening…" under it is the same sentence twice.
     if (peers.isNotEmpty() || vm.mesh.lastSweepMs != 0L) {
@@ -319,6 +323,77 @@ private fun YouCard(vm: WalkieViewModel) {
             style = VaniType.labelSmall, color = VaniColors.InkFaint
         )
     }
+}
+
+/**
+ * What this handset is spending on VANI. Unaccented on purpose: a meter wearing signal green
+ * invites a verdict nobody measured. The bars are the same three-step primitive a peer row uses
+ * for signal strength, so a bar means "measured level" in exactly one way on this screen, and the
+ * exact number sits beside it in mono because a glance should never be the only reading available.
+ */
+@Composable
+private fun LoadCard(vm: WalkieViewModel) {
+    val l = vm.load
+    Group("This handset") {
+        VaniCard {
+            Column {
+                MeterRow(
+                    label = "CPU · this app",
+                    value = if (l.ready) "${l.cpu.roundToInt()}%" else "…",
+                    note = "share of ${l.coreCount} cores · 1 s samples",
+                    bars = if (!l.ready) 0 else if (l.cpu < 5f) 1 else if (l.cpu < 30f) 2 else 3,
+                )
+                Spacer(Modifier.height(14.dp))
+                Rule()
+                Spacer(Modifier.height(14.dp))
+                MeterRow(
+                    label = "Memory · this app",
+                    value = if (l.ramMb > 0) "${gb(l.ramMb)} GB" else "…",
+                    note = "peak ${gb(l.peakRamMb)} GB of ${gb(l.totalRamMb)} GB in the phone",
+                    bars = level(l.ramMb, l.totalRamMb),
+                )
+                Spacer(Modifier.height(14.dp))
+                Rule()
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    if (vm.ui.wireFrames == 0) "nothing has left this phone over Bluetooth yet"
+                    else "${vm.ui.wireFrames} frame${if (vm.ui.wireFrames == 1) "" else "s"} · " +
+                        "${vm.ui.wireBytes} B on air this session",
+                    style = VaniLabel.stage, color = VaniColors.InkDim
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Read from the kernel's own counters for this process. VANI cannot see another app's " +
+                "load, so these are what the app costs, not what the phone is doing.",
+            style = VaniType.labelSmall, color = VaniColors.InkFaint
+        )
+    }
+}
+
+@Composable
+private fun MeterRow(label: String, value: String, note: String, bars: Int) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f)) {
+            Text(label.uppercase(), style = VaniLabel.badge, color = VaniColors.InkDim)
+            Spacer(Modifier.height(4.dp))
+            Text(value, style = VaniLabel.readout, color = VaniColors.Ink, maxLines = 1)
+            Spacer(Modifier.height(2.dp))
+            Text(note, style = VaniLabel.stage, color = VaniColors.InkFaint, maxLines = 1)
+        }
+        SignalBars(bars = bars)
+    }
+}
+
+private fun gb(mb: Int): String = String.format(java.util.Locale.US, "%.2f", mb / 1024.0)
+
+/** Three steps, the peer row's own quantisation; the number beside it carries the precision. */
+private fun level(part: Int, whole: Int): Int = when {
+    whole <= 0 || part <= 0 -> 0
+    part < whole / 8 -> 1
+    part < whole * 2 / 5 -> 2
+    else -> 3
 }
 
 // ------------------------------------------------------------------ talk
@@ -420,14 +495,18 @@ private fun PeerHead(vm: WalkieViewModel, peer: com.itantra.walkie.net.Peer?, br
                 label = "Broadcast", active = broadcast,
                 onClick = { vm.selectChannel(Address.ALL_ID) },
             )
-            Spacer(Modifier.weight(1f))
-            Text(
-                vm.ui.status.ifBlank { "idle" },
-                style = VaniType.labelSmall, color = VaniColors.InkFaint,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 150.dp).align(Alignment.CenterVertically)
-            )
         }
+        Spacer(Modifier.height(8.dp))
+        // What the machine is doing gets its own full-width line: squeezed between two pills it
+        // ellipsised "engines ready · 7 voices · mic in 11 langs" down to a fragment, and a status
+        // that names half a problem names nothing.
+        Text(
+            vm.ui.status.ifBlank { "idle" },
+            style = VaniType.labelSmall, color = VaniColors.InkFaint,
+            textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(10.dp))
         Rule()
     }
 }
@@ -469,14 +548,13 @@ internal fun TurnBubble(m: Msg, onReplay: () -> Unit) {
                     ArrowLine(m.path)
                 }
                 Text(m.text.ifBlank { "…" }, style = VaniType.bodyLarge, color = VaniColors.Ink)
-                if (m.toneLabel.isNotBlank()) {
+                val cost = wireLine(m)
+                if (m.toneLabel.isNotBlank() || cost != null) {
                     Spacer(Modifier.height(8.dp))
                     Rule()
                     Spacer(Modifier.height(8.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(VaniIcons.Mic, null, tint = VaniColors.InkDim, modifier = Modifier.size(12.dp))
-                        Text(m.toneLabel, style = VaniLabel.tone, color = VaniColors.InkDim, maxLines = 1)
-                    }
+                    if (m.toneLabel.isNotBlank()) MetaLine(VaniIcons.Mic, m.toneLabel)
+                    if (cost != null) MetaLine(VaniIcons.Air, cost)
                 }
             }
             if (m.status.isNotBlank()) {
@@ -508,6 +586,37 @@ internal fun TurnBubble(m: Msg, onReplay: () -> Unit) {
         }
     }
 }
+
+/** One measured fact about a turn, in the machine's own voice. */
+@Composable
+private fun MetaLine(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.padding(top = 2.dp)
+    ) {
+        Icon(icon, null, tint = VaniColors.InkDim, modifier = Modifier.size(12.dp))
+        Text(text, style = VaniLabel.tone, color = VaniColors.InkDim, maxLines = 1)
+    }
+}
+
+/**
+ * Bytes on the wire against bytes as plain text, in the machine's own voice. A frame that came out
+ * no smaller says so too: the codec picks the literal encoding whenever its model would lose, and
+ * hiding that would put the one dishonest number on the screen.
+ */
+private fun wireWords(on: Int, plain: Int, verb: String): String = when {
+    plain <= 0 -> "$on B $verb"
+    on >= plain -> "$on B $verb · plain text, nothing saved"
+    else -> "$on B $verb · $plain B as text · −${100 - on * 100 / plain}%"
+}
+
+/**
+ * What this turn cost on the wire. Null for a line that never went on air: a bench bubble says
+ * nothing rather than quoting a saving no radio delivered.
+ */
+private fun wireLine(m: Msg): String? =
+    if (m.wireBytes <= 0) null else wireWords(m.wireBytes, m.plainBytes, "on air")
 
 @Composable
 private fun ArrowLine(text: String) {
@@ -643,6 +752,18 @@ private fun PttZone(
                     modifier = Modifier.size(16.dp)
                 )
             }
+        }
+        // The cost of the draft, coded on this phone before it ever leaves it: the same frame the
+        // radio would send, measured as it is typed. Nothing appears when there is no model to
+        // measure with, because a preview the device cannot compute is a number, not a promise.
+        val cost = vm.wireCost(draft.trim())
+        if (cost != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                wireWords(cost.first, cost.second, "to send"),
+                style = VaniLabel.tone, color = VaniColors.InkFaint,
+                modifier = Modifier.padding(start = 4.dp)
+            )
         }
     }
 }

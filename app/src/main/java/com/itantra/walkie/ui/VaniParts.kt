@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Notes
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -317,8 +318,9 @@ fun VaniField(
     val shape = RoundedCornerShape(VaniRadius)
     BasicTextField(
         value = value,
-        onValueChange = { if (maxLength <= 0) it else it.take(maxLength) },
+        onValueChange = { onValueChange(if (maxLength <= 0) it else it.take(maxLength)) },
         modifier = modifier
+            .fillMaxWidth()
             .defaultMinSize(minHeight = 48.dp)
             .background(VaniColors.Ground, shape)
             .border(1.dp, VaniColors.Rule, shape)
@@ -714,6 +716,8 @@ object VaniIcons {
     val Replay = Icons.Outlined.PlayArrow
     val Check = Icons.Outlined.Check
     val Info = Icons.Outlined.Info
+    /** The frame's own glyph: bytes that left on the air. */
+    val Air = Icons.Outlined.Send
 }
 
 /** A row of the floating nav. Kept here so Talk, Mesh, Setup and Demo share one geometry. */
@@ -751,5 +755,9 @@ fun NavCell(
 /** Modifier helper kept local so panes do not each invent their own gutter. */
 fun Modifier.screenGutter() = this.padding(horizontal = 20.dp)
 
-/** The scroll body's bottom clearance: the nav floats, so content must pass under it. */
-val NavClearance = 104.dp
+/**
+ * The scroll body's bottom clearance: the nav floats above the 16dp it owns plus the system gesture
+ * bar, so content has to clear all three. Measured on device at 104dp the last caption of the Mesh
+ * pane sat under the pill, which is why this is generous rather than tight.
+ */
+val NavClearance = 128.dp

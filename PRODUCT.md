@@ -151,6 +151,14 @@ needs more than the current hop-limited flood, and per-thread language of record
 - Working app source: `app/src/main/java/com/itantra/walkie/` (`MainActivity.kt` UI,
   `WalkieViewModel.kt` pipeline, `ml/` ONNX engines, `audio/` capture and playback).
 - Reference voice clips and transcripts in `app/src/main/assets/refs/`.
+- The wire codec in production on the mesh path: `assets/mesh/charmodel.bin` (447 symbols, order-1)
+  through an LZMA range coder, framed with a CRC-16 and a flag that picks the smaller of coded or
+  literal per message. Proven on the handset over all 22 shipped clips: 1069 B on air against
+  1914 B of text, zero mismatches; 9 JVM round-trip/corruption/truncation tests in
+  `app/src/test/java/com/itantra/walkie/net/WireCodecTest.kt`.
+- Live console telemetry, all of it this process's own: bytes per message on the bubble, the
+  draft's coded cost while it is typed, the session's on-air total, and CPU / resident memory read
+  from `/proc/self`.
 - Measured pipeline behaviour recorded in project memory (latency, per-language voice quality,
   playback continuity), and verification scripts in `scripts/`.
 - **Absent, and must not be fabricated:** no user studies, no field deployments, no customer or

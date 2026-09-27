@@ -53,6 +53,18 @@ data class Msg(
      * +1 animated, 0 when nothing was read - a typed line, or a turn too short to judge.
      */
     val tone: Float = 0f,
+    /**
+     * Bytes the frame really was on air: the coded body, its checksum, and the tone prefix - the
+     * same count for a sent and a received line, since one end wrote it and the other read it.
+     * Zero means this line never crossed the radio, and the bubble prints nothing rather than a
+     * figure it inferred.
+     */
+    val wireBytes: Int = 0,
+    /**
+     * What the same words cost as plain UTF-8, so the byte chip can say what the codec saved
+     * instead of quoting a number with nothing to compare it to.
+     */
+    val plainBytes: Int = 0,
 )
 
 /** Which of the console's four surfaces is on screen. Named as the design names them. */
@@ -101,6 +113,9 @@ data class UiState(
     /** Per-channel bubbles, newest last. Keyed by [Address.ALL_ID] or a peer's address. */
     val threads: Map<String, List<Msg>> = emptyMap(),
     val demo: DemoState = DemoState(),
+    /** Frames this phone has handed the radio since launch, and the bytes they cost. */
+    val wireFrames: Int = 0,
+    val wireBytes: Int = 0,
 )
 
 class WalkieViewModel(app: Application) : AndroidViewModel(app) {
@@ -127,6 +142,15 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun updateUi(s: UiState) { ui = s }
 
+    /**
+     * This handset's own cost, sampled once a second. The console prints it because a walkie that
+     * runs three models on a phone has to be able to say what that takes - and because "it works"
+     * without a number next to it is a claim, not a demonstration.
+     */
+    val load: com.itantra.walkie.perf.DeviceLoad by lazy {
+        com.itantra.walkie.perf.DeviceLoad(getApplication(), viewModelScope)
+    }
+
     // ---------------------------------------------------------------- mesh + identity
 
     private val prefs by lazy {
@@ -136,7 +160,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
     /** The radio. Everything the console knows about the mesh arrives through it. */
     val mesh: com.itantra.walkie.net.MeshTransport by lazy {
         com.itantra.walkie.net.BleMesh(getApplication()) { ui.name to ui.src }.also { m ->
-            m.listener = { from, channel, text, tone -> onInbound(from, channel, text, tone) }
+            m.listener = { from, channel, text, tone, onAir ->
+                onInbound(from, channel, text, tone, onAir)
+            }
         }
     }
 
@@ -147,7 +173,11 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
      * of them knowing each other's language.
      */
     private fun onInbound(
-        fromPeerId: String, channelId: String, text: String, tone: com.itantra.walkie.ml.Tone
+        fromPeerId: String,
+        channelId: String,
+        text: String,
+        tone: com.itantra.walkie.ml.Tone,
+        onAirBytes: Int,
     ) {
         // A frame that arrived is a frame that arrived: it goes on its channel even if the roster
         // has not re-listed that node this second, and an unknown sender is labelled as one
@@ -163,6 +193,7 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
             tag = from,
             who = from,
             tone = tone,
+            wireBytes = onAirBytes,
         )
     }
 
@@ -181,6 +212,7 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         tag: String,
         who: String,
         tone: com.itantra.walkie.ml.Tone = com.itantra.walkie.ml.Tone.NEUTRAL,
+        wireBytes: Int = 0,
         onComplete: (String) -> Unit = { },
     ) {
         viewModelScope.launch(Dispatchers.Default) {
@@ -199,6 +231,8 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                         path = "spoken to you · ${toLang.native}",
                         toneLabel = toneMark(tone),
                         tone = tone.animation,
+                        wireBytes = wireBytes,
+                        plainBytes = if (wireBytes > 0) text.toByteArray(Charsets.UTF_8).size else 0,
                     )
                 )
                 setSpeaking(id, true)
@@ -316,7 +350,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         if (t.isEmpty()) return
         val chan = ui.active
         val nodes = mesh.nodesReached
-        val sent = mesh.send(com.itantra.walkie.net.Address.of(chan), t, tone)
+        val onAir = mesh.send(com.itantra.walkie.net.Address.of(chan), t, tone)
+        val sent = onAir > 0
+        val plain = t.toByteArray(Charsets.UTF_8).size
         appendToThread(
             chan,
             Msg(
@@ -333,11 +369,17 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 statusOk = sent,
                 toneLabel = toneMark(tone),
                 tone = tone.animation,
+                // Counted off the frame the radio was handed, not off the text: this is the
+                // number the codec actually achieved for these words.
+                wireBytes = onAir,
+                plainBytes = if (sent) plain else 0,
             )
         )
         updateUi(ui.copy(
             lastText = t,
-            status = if (sent) "sent over the air" else "not sent · no link up"
+            wireFrames = ui.wireFrames + if (sent) 1 else 0,
+            wireBytes = ui.wireBytes + onAir,
+            status = if (sent) "on air · $onAir B" else "not sent · no link up"
         ))
     }
 
@@ -444,7 +486,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
             onComplete = { timing ->
                 updateUi(ui.copy(demo = ui.demo.copy(
                     running = false,
-                    wire = timing,
+                    // The byte figure is measured with the shipped tables - the same codec a real
+                    // frame runs - so it says "codes to", never "sent": the bench skipped the radio.
+                    wire = timing + wireClause(t),
                     toneLabel = when {
                         !ui.matchTone -> "tone matching off"
                         tone.neutral -> "no tone read"
@@ -453,6 +497,84 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 )))
             },
         )
+    }
+
+    /**
+     * What these words cost as a coded frame on this phone, measured with the tables it ships
+     * with: bytes on the wire, and the same text as UTF-8. Null when there is no model to measure
+     * against - the console then prints nothing rather than a figure it inferred.
+     */
+    fun wireCost(text: String): Pair<Int, Int>? {
+        if (text.isEmpty()) return null
+        val c = com.itantra.walkie.net.WireModel.codec(getApplication()) ?: return null
+        val frame = runCatching { com.itantra.walkie.net.WireCodec.frame(c, text) }.getOrNull()
+            ?: return null
+        return frame.size to text.toByteArray(Charsets.UTF_8).size
+    }
+
+    /** The same two numbers as the bench's sentence: it codes the text, it does not send it. */
+    private fun wireClause(text: String): String {
+        val c = wireCost(text) ?: return ""
+        return " · codes to ${c.first} B of ${c.second} B"
+    }
+
+    /**
+     * Proof on the handset, not in a JVM test: the shipped tables read out of `AssetManager` - not
+     * off a worktree - and every reference transcript the APK carries goes through the same
+     * framing the radio uses, then comes back character for character. A table set that failed to
+     * install would leave the mesh working in literal frames and quietly costing 3x the bytes, so
+     * the numbers get printed whether they are good or not.
+     */
+    fun wireProbe() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val c = com.itantra.walkie.net.WireModel.codec(getApplication())
+            if (c == null) {
+                android.util.Log.e("USER", "WIRE model unavailable on this device - frames go literal")
+                return@launch
+            }
+            val names = runCatching {
+                getApplication<Application>().assets.list("refs")?.toList() ?: emptyList()
+            }.getOrDefault(emptyList()).filter { it.endsWith(".txt") }.sorted()
+            if (names.isEmpty()) {
+                android.util.Log.e("USER", "WIRE no transcripts to check against")
+                return@launch
+            }
+            var on = 0L
+            var plain = 0L
+            var bad = 0
+            for (n in names) {
+                val text = runCatching {
+                    getApplication<Application>().assets.open("refs/$n")
+                        .use { it.readBytes().toString(Charsets.UTF_8).trim() }
+                }.getOrDefault("")
+                if (text.isEmpty()) continue
+                val frame = com.itantra.walkie.net.WireCodec.frame(c, text)
+                val back = com.itantra.walkie.net.WireCodec.unframe(c, frame)
+                if (back != text) bad++
+                // The seam the radio stands on: a tone byte-prefixed in front of a coded frame.
+                val wrapped = com.itantra.walkie.ml.Tone.wrap(frame, com.itantra.walkie.ml.Tone(0.61f))
+                val (t2, f2) = com.itantra.walkie.ml.Tone.split(wrapped)
+                if (t2.animation != 0.61f ||
+                    com.itantra.walkie.net.WireCodec.unframe(c, f2) != text
+                ) bad++
+                val bytes = text.toByteArray(Charsets.UTF_8).size
+                on += frame.size; plain += bytes
+                android.util.Log.e(
+                    "USER", "WIRE ${n.removeSuffix(".txt")} ${frame.size} B of $bytes B " +
+                        "flag=${frame[0]} exact=${back == text}"
+                )
+            }
+            android.util.Log.e(
+                "USER", "WIRE total $on B of $plain B (-${100 - on * 100 / plain}%) " +
+                    "over ${names.size} clips, mismatches=$bad, alphabet=${c.alphabetSize}"
+            )
+            withContext(Dispatchers.Main) {
+                updateUi(ui.copy(
+                    status = if (bad == 0) "wire codec: $on B of $plain B on air, every clip exact"
+                    else "wire codec FAULTY: $bad of ${names.size} clips did not round-trip"
+                ))
+            }
+        }
     }
 
     fun demoStartTalk() {
@@ -679,6 +801,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 "transmit" -> withContext(Dispatchers.Main) {
                     sendMessage("नमस्कार, सभी टीमों को सूचित किया जाता है।")
                 }
+                // The codec proven on the handset itself: shipped tables read from assets, every
+                // reference clip framed and read back exactly, byte counts printed either way.
+                "wire" -> wireProbe()
                 // One turn around the loopback bench, from adb, with no second handset and no
                 // microphone: it exercises the same translate -> solve -> speak path an inbound
                 // frame runs, so a language pair can be smoke-tested on a single device.

@@ -30,6 +30,7 @@ android {
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.4.8" }
     packagingOptions { jniLibs { useLegacyPackaging = false } }
+    testOptions { unitTests.all { it.testLogging.showStandardStreams = true } }
     androidResources {
         // One suffix, not a glob: aapt2 matches noCompress against the end of the asset path, so
         // this stores exactly the SraVaani encoder and lets Bundled.mapped() map it out of the
@@ -50,4 +51,5 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    testImplementation("junit:junit:4.13.2")
 }

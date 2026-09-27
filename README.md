@@ -109,7 +109,18 @@ adb logcat -s BENCH USER TONE PROSODY REFS LOAD STT MTREBASE
 | `wer` | word error rate over `wer_*.wav` clips dropped into filesDir |
 | `sttbench` | mic coverage per language, and the reference clip each one is actually recognised into |
 | `mtrebase` | whether the Devanagari-only MT dictionary can read a re-based script, per language |
+| `wire` | whether the shipped wire tables load on the handset, and every clip frames and reads back exactly |
 | `demo` | one turn around the single-handset loopback bench |
+
+`wire` is the codec's own proof. It reads `assets/mesh/charmodel.bin` through `AssetManager` rather
+than off a worktree, frames and reads back every reference transcript the APK carries, and prints
+the byte counts whether they are good or not. Measured on the handset over the 22 clips this build
+ships: **1069 B on the wire against 1914 B of text (-45%), zero mismatches** - Hindi 90 B → 27 B,
+Malayalam 167 B → 38 B, Telugu 96 B → 32 B, and the three languages whose letters are outside the
+model's 447-symbol alphabet falling back to literal frames at +3 B of flag and checksum rather than
+paying the 3.8× an escape-per-character model would cost them. The same numbers appear on the
+console: bytes per message on the bubble, the draft's cost while it is typed, and the total the
+session has put on the air.
 
 The **Demo** pane in the app is the same thing with a screen on it: phone 1 and phone 2 on one
 handset, each with its own language, so the whole chain can be tested with no second device in

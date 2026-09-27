@@ -54,10 +54,17 @@ class BleMesh(
     override var peers by mutableStateOf(listOf<Peer>())
     override var lastSweepMs by mutableStateOf(0L)
     override var nodesReached by mutableStateOf(0)
-    override var listener: ((String, String, String, com.itantra.walkie.ml.Tone) -> Unit)? = null
+    override var listener: ((String, String, String, com.itantra.walkie.ml.Tone, Int) -> Unit)? = null
 
     private val known = LinkedHashMap<String, Peer>()
     override fun lastKnown(peerId: String): Peer? = known[peerId]
+
+    /**
+     * The shipped character model the words are compressed with. Null is a degraded mesh, not a
+     * broken one - [WireCodec.frame] then always chooses the literal encoding, and the console
+     * prints the bytes it really sent rather than the ones a model would have saved.
+     */
+    private val codec get() = WireModel.codec(appContext)
 
     private var server: BluetoothGattServer? = null
     private var advCb: AdvertiseCallback? = null
@@ -228,22 +235,26 @@ class BleMesh(
     }
 
     @SuppressLint("MissingPermission")
-    override fun send(addr: Address, text: String, tone: com.itantra.walkie.ml.Tone): Boolean {
+    override fun send(addr: Address, text: String, tone: com.itantra.walkie.ml.Tone): Int {
+        if (text.isEmpty()) return 0
+        // The words leave as a coded frame, not as UTF-8: an order-1 model over the Brahmic
+        // alphabet roughly halves a sentence (Hindi 90 bytes -> 27 on the shipped transcripts),
+        // and [WireCodec.frame] picks the literal encoding whenever the model would lose.
+        val frame = WireCodec.frame(codec, text)
         // The tone rides in front of the message body, not in the PDU header: the header is
-        // already full and the relay forwards it untouched, so a three-byte prefix is the only
+        // already full and the relay forwards it untouched, so a two-byte prefix is the only
         // place it can go without changing how a frame is routed.
-        val bytes = com.itantra.walkie.ml.Tone.pack(text, tone)
-        if (bytes.isEmpty()) return false
+        val bytes = com.itantra.walkie.ml.Tone.wrap(frame, tone)
         val live = links.values.filter { it.ready }
-        if (live.isEmpty()) return false
+        if (live.isEmpty()) return 0
         val max = live.minOf { it.chunk }
         val count = ((bytes.size + max - 1) / max).coerceAtMost(255)
-        if (bytes.size > count * max) return false
+        if (bytes.size > count * max) return 0
         val id = nextId
         nextId = (nextId + 1) % 65536
         val direct = addr is Address.One
         val target = if (direct) macBytes((addr as Address.One).peerId) else null
-        if (direct && target == null) return false
+        if (direct && target == null) return 0
         var off = 0
         for (i in 0 until count) {
             val n = max.coerceAtMost(bytes.size - off)
@@ -257,10 +268,10 @@ class BleMesh(
                 o.write(bytes, off, n)
             }
             off += n
-            val frame = pdu.toByteArray()
-            for (l in live) { l.queue.add(frame); pump(l) }
+            val pduBytes = pdu.toByteArray()
+            for (l in live) { l.queue.add(pduBytes); pump(l) }
         }
-        return true
+        return bytes.size
     }
 
     private fun pump(l: Link) {
@@ -337,10 +348,20 @@ class BleMesh(
             inbox.remove(key)
             val me = manager?.adapter?.address
             if (!direct || dest == me || me == null) {
-                val (tone, body) = com.itantra.walkie.ml.Tone.unpack(r.join())
-                listener?.invoke(
-                    addr, if (direct) dest else Address.ALL_ID, body, tone
-                )
+                val all = r.join()
+                val (tone, coded) = com.itantra.walkie.ml.Tone.split(all)
+                val body = WireCodec.unframe(codec, coded)
+                if (body == null) {
+                    // A frame that fails its checksum, or one coded with a model this phone does
+                    // not hold, is dropped out loud. Guessing at text is the one failure mode a
+                    // radio whose whole promise is "the words you hear are the words that were
+                    // said" cannot afford.
+                    android.util.Log.w(TAG, "refused ${all.size}-byte frame from $addr: unreadable")
+                } else {
+                    listener?.invoke(
+                        addr, if (direct) dest else Address.ALL_ID, body, tone, all.size
+                    )
+                }
             }
         }
         if (hops > 0 && seen.put(key, true) == null) {

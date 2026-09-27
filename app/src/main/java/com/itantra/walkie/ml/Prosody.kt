@@ -37,8 +37,14 @@ data class Tone(val animation: Float = 0f) {
          */
         private const val MARK = 0x01
 
-        fun pack(text: String, tone: Tone): ByteArray {
-            val body = text.toByteArray(Charsets.UTF_8)
+        fun pack(text: String, tone: Tone): ByteArray =
+            wrap(text.toByteArray(Charsets.UTF_8), tone)
+
+        /**
+         * [pack] for a body that is already framed - a compressed message, for instance - so the
+         * tone can ride in front of bytes the sender produced rather than in front of raw text.
+         */
+        fun wrap(body: ByteArray, tone: Tone): ByteArray {
             if (tone.neutral) return body
             return ByteArray(2 + body.size).also {
                 it[0] = MARK.toByte(); it[1] = tone.wire
@@ -46,11 +52,15 @@ data class Tone(val animation: Float = 0f) {
             }
         }
 
-        fun unpack(all: ByteArray): Pair<Tone, String> {
+        fun unpack(all: ByteArray): Pair<Tone, String> =
+            split(all).let { it.first to String(it.second, Charsets.UTF_8) }
+
+        /** Inverse of [wrap]: the tone, and the bytes that followed it untouched. */
+        fun split(all: ByteArray): Pair<Tone, ByteArray> {
             if (all.size >= 2 && all[0] == MARK.toByte()) {
-                return fromWire(all[1].toInt()) to String(all, 2, all.size - 2, Charsets.UTF_8)
+                return fromWire(all[1].toInt()) to all.copyOfRange(2, all.size)
             }
-            return NEUTRAL to String(all, Charsets.UTF_8)
+            return NEUTRAL to all
         }
     }
 }

@@ -421,7 +421,9 @@ private fun WireRow(vm: WalkieViewModel) {
             Text(
                 d.wire.ifBlank { "no turn yet · nothing has crossed" },
                 style = VaniType.labelSmall, color = VaniColors.InkFaint,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
+                // The turn's timings and what its words coded to are the two numbers the bench
+                // exists to show; one line here ellipsised the byte figure away.
+                maxLines = 2, overflow = TextOverflow.Ellipsis
             )
         }
         Box(
