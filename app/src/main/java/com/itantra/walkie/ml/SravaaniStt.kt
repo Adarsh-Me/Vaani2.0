@@ -4,6 +4,7 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import com.itantra.walkie.Lang
+import java.nio.ByteBuffer
 import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import java.nio.LongBuffer
@@ -21,9 +22,9 @@ import kotlin.math.sqrt
  * it has no language token at all - one graph transcribes all 65 languages, so adding a
  * language to the app cannot silently disable the microphone.
  *
- * The pack is 496 MB: an encoder whose fp32 Conv weights have been rewritten to per-channel
- * int8 behind DequantizeLinear (608 -> 454 MB, measured quality-neutral, see
- * scripts/fetch-sravaani.py), the 41 MB joint decoder, and the frontend constants dumped out
+ * The pack is 520 MB: an encoder whose fp32 Conv weights have been rewritten to per-channel
+ * int8 behind DequantizeLinear (638 -> 477 MB, measured quality-neutral, see
+ * scripts/fetch-sravaani.py), the 43 MB joint decoder, and the frontend constants dumped out
  * of NeMo's preproc.pt rather than re-derived.
  *
  * Frontend is NeMo's fbank, not Whisper's log-mel: pre-emphasis 0.97, Hann-400 centred in a
@@ -43,16 +44,43 @@ class SravaaniStt(private val env: OrtEnvironment, private val res: Bundled, thr
     /** Encoder frames the last utterance produced - the loop's work is proportional to this. */
     var lastFrames = 0
 
-    private val opts = OrtSession.SessionOptions().apply { setIntraOpNumThreads(threads) }
-    private fun sessOrNull(name: String): OrtSession? = try {
-        env.createSession(res.buffer("$DIR/$name"), opts)
+    private val opts = Sessions.options(threads)
+
+    /**
+     * Mappings handed to a session, held for that session's lifetime. `FileChannel.map` documents
+     * that a region may be unmapped once the buffer representing it becomes unreachable, and
+     * ONNX Runtime reads weights out of these pages while it runs - a collected buffer would mean
+     * a SIGSEGV in the middle of a transcription, so the reference is part of the session's state.
+     */
+    private val pinned = ArrayList<ByteBuffer>()
+
+    /**
+     * The encoder is mapped and the decoder is read from the APK: 477 MB against 43 MB, and only
+     * the first is bigger than the process can hold in native memory. See [Bundled.mapped], and
+     * the log line naming which of the two sources the mapping came from - that is the proof the
+     * 477 MB copy in filesDir is gone rather than a comment claiming it is.
+     */
+    private fun sessOrNull(name: String, large: Boolean): OrtSession? = try {
+        val path = "$DIR/$name"
+        when (val src = if (large) res.mapped(path) else null) {
+            is Bundled.Large.Buffer -> {
+                pinned += src.buf
+                android.util.Log.e("STT", "$name mapped out of the APK, no extract")
+                env.createSession(src.buf, opts)
+            }
+            is Bundled.Large.File -> {
+                android.util.Log.e("STT", "$name extracted to ${src.file.name} (asset is compressed)")
+                env.createSession(src.file.path, opts)
+            }
+            null -> env.createSession(res.buffer(path), opts)
+        }
     } catch (e: Exception) {
         if (lastError.isBlank()) lastError = "sravaani $name: ${e.message}"
         null
     }
 
-    private val enc = sessOrNull("encoder.qdq.onnx")
-    private val dj = sessOrNull("decoder_joint.onnx")
+    private val enc = sessOrNull("encoder.qdq.onnx", large = true)
+    private val dj = sessOrNull("decoder_joint.onnx", large = false)
 
     fun isReady() = enc != null && dj != null
 
@@ -285,6 +313,8 @@ class SravaaniStt(private val env: OrtEnvironment, private val res: Bundled, thr
     override fun close() {
         try { enc?.close() } catch (_: Exception) {}
         try { dj?.close() } catch (_: Exception) {}
+        try { opts.close() } catch (_: Exception) {}
+        pinned.clear() // only safe after the sessions that read from them are gone
     }
 
     private companion object {

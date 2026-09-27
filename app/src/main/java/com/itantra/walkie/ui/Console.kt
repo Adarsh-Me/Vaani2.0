@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,25 +28,24 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CellTower
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.VolumeUp
-import androidx.compose.material.icons.outlined.CellTower
+import androidx.compose.material.icons.outlined.Send
+import androidx.compose.material.icons.outlined.Bluetooth
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,12 +63,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.times
 import com.itantra.walkie.Lang
 import com.itantra.walkie.Msg
 import com.itantra.walkie.Pane
 import com.itantra.walkie.WalkieViewModel
 import com.itantra.walkie.net.Address
-import com.itantra.walkie.net.MeshTransport
 import com.itantra.walkie.net.RadioState
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -79,376 +77,277 @@ import java.util.Locale
 private val TimeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
 
 /**
- * The console: three working panes and one bench over one radio. Channels is the status board of
- * who is reachable, On air is the lit channel's traffic, Identity is who this phone is to the rest
- * of the mesh, and Demo runs both handsets on this one phone so the chain can be tested alone.
- * The talk bar sits above the navigation on the working panes, because changing screen does not
- * put the microphone down.
+ * The console: the design's three surfaces plus the bench the operator asked for.
+ *
+ * `vani-mesh.html`, `vani-talk.html` and `vani-setup.html` are ported screen for screen; the fourth
+ * cell is the single-handset loopback bench, which the export does not know about but the product
+ * brief does - the user asked for it by name on 2026-09-25 because that is how the chain gets
+ * tested with one handset in hand. It is a real pane over the real engines, not dummy content.
+ *
+ * The navigation floats over the content rather than pushing it, exactly as the export draws it,
+ * and every pane leaves [NavClearance] at the bottom so nothing important hides under it.
  */
 @Composable
-fun Console(vm: WalkieViewModel, onEnableRadio: () -> Unit, onGrantRadio: () -> Unit,
-            requestMic: () -> Boolean) {
+fun Console(
+    vm: WalkieViewModel,
+    onEnableRadio: () -> Unit,
+    onGrantRadio: () -> Unit,
+    requestMic: () -> Boolean,
+) {
     val dest = vm.ui.pane
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(VaniColors.Ground)
-            .imePadding()
+    Box(
+        Modifier.fillMaxSize().background(VaniColors.Ground).imePadding()
     ) {
-        MeshStrip(vm, onEnableRadio, onGrantRadio, modifier = Modifier.statusBarsPadding())
-        Box(Modifier.weight(1f)) {
-            when (dest) {
-                Pane.Channels -> Roster(vm, vm.mesh)
-                Pane.OnAir -> ChannelThread(vm)
-                Pane.Identity -> SetupPanel(vm, firstRun = false, onDone = { })
-                Pane.Demo -> DemoPanel(vm, requestMic)
-            }
+        when (dest) {
+            Pane.Mesh -> MeshPane(vm, onEnableRadio, onGrantRadio)
+            Pane.Talk -> TalkPane(vm, requestMic)
+            Pane.Setup -> SetupPanel(vm, firstRun = false, onDone = { })
+            Pane.Demo -> DemoPanel(vm, requestMic)
         }
-        StatusReadout(vm)
-        // The bench owns its own microphone button: two live capture bars on one screen would
-        // both be holding the same recorder, and the one behind could not say whose words it got.
-        if (dest != Pane.Demo) TalkBar(vm, requestMic)
-        VaniNavBar(dest) { vm.selectPane(it) }
+        VaniNavBar(dest, Modifier.align(Alignment.BottomCenter).navigationBarsPadding()) { vm.selectPane(it) }
     }
 }
 
-/**
- * The console's cursor line. What the engines are doing and what a turn cost is real output of
- * this app - the numbers are how a field team tells a working radio from a decorative one - so it
- * stays on screen in the machine face rather than being dressed up.
- */
+/** `.app-top` - the screen's name, what it is for, and the one control that is not the main action. */
 @Composable
-private fun StatusReadout(vm: WalkieViewModel) {
+internal fun AppTop(
+    title: String,
+    sub: String,
+    modifier: Modifier = Modifier,
+    trailing: @Composable () -> Unit = { VaniWordmark() },
+) {
     Row(
-        Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 2.dp),
+        modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            vm.ui.status.ifBlank { "idle" },
-            style = VaniType.labelSmall, color = VaniColors.InkFaint,
-            maxLines = 2, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
+        Column(Modifier.weight(1f)) {
+            Text(title, style = VaniType.headlineMedium, color = VaniColors.Ink)
+            Text(sub, style = VaniType.titleSmall, color = VaniColors.InkDim)
+        }
+        trailing()
+    }
+}
+
+// ------------------------------------------------------------------ mesh
+
+@Composable
+private fun MeshPane(
+    vm: WalkieViewModel,
+    onEnableRadio: () -> Unit,
+    onGrantRadio: () -> Unit,
+) {
+    val mesh = vm.mesh
+    val now = Ticker()
+    val reached = mesh.nodesReached
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        AppTop(
+            title = "Mesh",
+            sub = "People within Bluetooth range",
+            trailing = {
+                Chip(
+                    text = radioWord(mesh.radio),
+                    icon = VaniIcons.Bluetooth,
+                    tone = radioTone(mesh.radio),
+                )
+            }
         )
-        Spacer(Modifier.width(10.dp))
+        Column(
+            Modifier.weight(1f).verticalScroll(rememberScrollState())
+                .screenGutter().padding(bottom = NavClearance)
+        ) {
+            when (mesh.radio) {
+                // Android 12+ will not let this app enable the radio, so the screen says who can.
+                RadioState.Off, RadioState.PermissionNeeded -> RadioOffPane(
+                    permission = mesh.radio == RadioState.PermissionNeeded,
+                    missing = false,
+                    onEnableRadio = onEnableRadio,
+                    onGrantRadio = onGrantRadio,
+                )
+                RadioState.RadioMissing -> RadioOffPane(permission = false, missing = true, {}, {})
+                else -> {
+                    if (mesh.peers.isEmpty()) {
+                        if (mesh.lastSweepMs == 0L) ScanLine("Scanning for VANI devices…")
+                        else Notice(
+                            "No phone in range. Advertising and listening over Bluetooth - " +
+                                "VANI on another handset shows up here by itself, there is nothing to pair."
+                        )
+                    }
+                    PeerSection(vm, reached, now)
+                    Notice(
+                        warn = true,
+                        body = androidx.compose.ui.text.buildAnnotatedString {
+                            append("Discovery is real Bluetooth; delivery is not yet verified. ")
+                            append(
+                                "No message has been shown crossing two handsets, so every send " +
+                                    "stays marked not sent until that is demonstrated."
+                            )
+                        })
+                    Spacer(Modifier.height(16.dp))
+                }
+            }
+            YouCard(vm)
+        }
+    }
+}
+
+@Composable
+private fun RadioOffPane(
+    permission: Boolean,
+    missing: Boolean,
+    onEnableRadio: () -> Unit,
+    onGrantRadio: () -> Unit,
+) {
+    Notice(
+        if (missing) "This phone has no Bluetooth radio, so nothing can leave it. Text still works " +
+            "on the bench, and every language still translates on this handset."
+        else if (permission) "VANI needs your permission to use Bluetooth. One tap, then this phone " +
+            "joins the mesh."
+        else "VANI cannot turn Bluetooth on by itself - Android 12+ requires you to allow it. " +
+            "One tap, then the phone joins the mesh."
+    )
+    if (!missing) {
+        Spacer(Modifier.height(16.dp))
+        PrimaryButton(
+            label = if (permission) "Allow Bluetooth" else "Turn on Bluetooth",
+            icon = VaniIcons.Bluetooth,
+            onClick = if (permission) onGrantRadio else onEnableRadio,
+        )
+        Spacer(Modifier.height(10.dp))
         Text(
-            if (vm.ui.turbo) "turbo solve" else "full solve",
+            "Radio use is continuous while VANI is open; it is the cost of working with no " +
+                "network. Close the app to stop it.",
             style = VaniType.labelSmall, color = VaniColors.InkFaint
         )
     }
 }
 
-// ------------------------------------------------------------------ mesh status
-
 @Composable
-private fun MeshStrip(vm: WalkieViewModel, onEnableRadio: () -> Unit, onGrantRadio: () -> Unit,
-                      modifier: Modifier = Modifier) {
-    val mesh = vm.mesh
-    val now = Ticker()
-    val reached = mesh.nodesReached
-    Column(modifier.fillMaxWidth().background(VaniColors.Panel)) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            VaniWordmark(health = reached / 6f, modifier = Modifier.width(104.dp))
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.End) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Caps(radioWord(mesh.radio), VaniType.labelMedium, color = radioColor(mesh.radio))
-                    Spacer(Modifier.width(7.dp))
-                    // Pulse rate is the mesh's own rhythm: a settling sweep breathes faster than a
-                    // full roster, so the lamp tells you how the radio is doing, not just that it is on.
-                    val period = 1600L - (reached.coerceAtMost(6) * 180L)
-                    val on = now / period % 2L == 0L
-                    Lamp(if (on) radioColor(mesh.radio) else radioColor(mesh.radio).copy(alpha = 0.25f), ring = true)
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "$reached node${if (reached == 1) "" else "s"} · " +
-                        if (mesh.lastSweepMs == 0L) "nothing heard yet"
-                        else "swept ${since(mesh.lastSweepMs)} ago",
-                    style = VaniType.labelSmall, color = VaniColors.InkFaint
-                )
-            }
-        }
-        // Each radio condition a person can fix says what is wrong and offers the fix.
-        val blocked: Triple<String, String, (() -> Unit)?>? = when (mesh.radio) {
-            RadioState.Off ->
-                Triple("Bluetooth is off — no other phone can be reached", "Turn on", onEnableRadio)
-            RadioState.PermissionNeeded ->
-                Triple("VANI needs permission to use Bluetooth", "Allow", onGrantRadio)
-            RadioState.RadioMissing ->
-                Triple("This phone has no Bluetooth radio — nothing can leave it", "", null)
-            else -> null
-        }
-        if (blocked != null) {
-            Rule(color = VaniColors.PanelLit)
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .background(VaniColors.AlertDeep)
-                    .clickable(enabled = blocked.third != null, role = Role.Button) { blocked.third?.invoke() }
-                    .padding(horizontal = 16.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    blocked.first,
-                    style = VaniType.labelSmall.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.4.sp),
-                    color = VaniColors.Alert,
-                    modifier = Modifier.weight(1f)
-                )
-                if (blocked.second.isNotEmpty()) {
-                    Caps(blocked.second, VaniType.labelMedium, color = VaniColors.Ink)
-                }
-            }
+private fun PeerSection(vm: WalkieViewModel, reached: Int, now: Long) {
+    val peers = vm.mesh.peers
+    Spacer(Modifier.height(4.dp))
+    // While the first sweep is still out there the scan line above already says so; a second
+    // "listening…" under it is the same sentence twice.
+    if (peers.isNotEmpty() || vm.mesh.lastSweepMs != 0L) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 10.dp)) {
+            Text(
+                "$reached node${if (reached == 1) "" else "s"} in range · " +
+                    if (vm.mesh.lastSweepMs == 0L) "nothing heard yet"
+                    else "swept ${since(vm.mesh.lastSweepMs)} ago",
+                style = VaniType.labelMedium, color = VaniColors.InkDim, modifier = Modifier.weight(1f)
+            )
         }
     }
-    Rule()
-}
-
-// ------------------------------------------------------------------ the status board
-
-@Composable
-private fun Roster(vm: WalkieViewModel, mesh: MeshTransport) {
-    val peers = mesh.peers
-    val lit = vm.ui.active
-    LazyColumn(Modifier.fillMaxSize()) {
-        item {
-            ChannelRow(
-                title = "ALL · broadcast",
-                sub = "every phone in range · each translates on receipt",
-                tag = "${mesh.nodesReached} in range",
-                preview = vm.threadFor(Address.ALL_ID).lastOrNull(),
-                lines = vm.threadFor(Address.ALL_ID).size,
-                lit = lit == Address.ALL_ID,
-                index = 0,
-                leading = { Icon(Icons.Filled.Language, null, tint = VaniColors.Signal, modifier = Modifier.size(21.dp)) },
-                onClick = { vm.selectChannel(Address.ALL_ID) }
-            )
-            Rule(color = VaniColors.PanelLit)
-        }
-        if (peers.isEmpty()) {
-            item {
-                Row(
-                    Modifier.fillMaxWidth().height(104.dp).padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Lamp(VaniColors.Alert, ring = true)
-                    Spacer(Modifier.width(12.dp))
-                    Column {
-                        Text("No phone in range", style = VaniType.titleMedium, color = VaniColors.Ink)
-                        Spacer(Modifier.height(3.dp))
-                        Text(
-                            "Advertising and listening over Bluetooth. VANI on another handset " +
-                                "shows up here by itself — there is nothing to pair.",
-                            style = VaniType.labelSmall, color = VaniColors.InkFaint, maxLines = 3
-                        )
-                    }
-                }
-                Rule(color = VaniColors.PanelLit)
-            }
-            return@LazyColumn
-        }
-        items(peers, key = { it.id }) { p ->
-            // A node seen but not yet introduced is listed by address. The name arrives in the
-            // handshake, and inventing one earlier would be the same lie as a fake node.
-            val named = p.name.isNotBlank()
-            ChannelRow(
-                title = if (named) p.name else p.id,
-                sub = if (named) "last heard ${since(p.lastHeardMs)} ago · ${p.rssi} dBm"
-                else "found over Bluetooth · not yet introduced",
-                tag = if (named) p.lang.native else "—",
-                bars = p.bars,
-                age = since(p.lastHeardMs),
-                preview = vm.threadFor(p.id).lastOrNull(),
-                lines = vm.threadFor(p.id).size,
-                lit = lit == p.id,
-                index = peers.indexOf(p) + 1,
-                onClick = { vm.selectChannel(p.id) }
-            )
-            Rule(color = VaniColors.PanelLit)
-        }
+    // The export offers a Rescan pill, but this radio sweeps continuously, so a button that
+    // restarted it would either do nothing or drop live links. The age above is the honest
+    // version of the same information.
+    BroadcastRow(vm, lit = vm.ui.active == Address.ALL_ID)
+    Spacer(Modifier.height(8.dp))
+    peers.forEachIndexed { i, p ->
+        val named = p.name.isNotBlank()
+        val voice = vm.hasVoice(p.lang)
+        PeerRow(
+            initials = initials(if (named) p.name else p.id),
+            name = if (named) p.name else p.id,
+            meta = (if (named) "${p.lang.native} · ${p.lang.label}" else "found over Bluetooth") +
+                " — " + (if (named) "last heard ${since(p.lastHeardMs)} ago" else "not yet introduced") +
+                if (voice) "" else " · typed only",
+            rssi = p.rssi,
+            selected = vm.ui.active == p.id,
+            modifier = Modifier.padding(top = if (i == 0) 8.dp else 0.dp),
+            onClick = { vm.selectChannel(p.id); vm.selectPane(Pane.Talk) },
+        )
     }
+    Spacer(Modifier.height(16.dp))
 }
 
-/**
- * One ruled channel: name, what it really is, signal and age — and, once traffic exists, the
- * last line on it. The board doubles as the traffic readout so the roster is never just a picker.
- */
+/** The mesh's own channel: one transmission, every phone translating where it lands. */
 @Composable
-private fun ChannelRow(
-    title: String,
-    sub: String,
-    tag: String,
-    preview: Msg?,
-    lines: Int,
-    lit: Boolean,
-    index: Int,
-    modifier: Modifier = Modifier,
-    bars: Int = -1,
-    age: String? = null,
-    leading: (@Composable () -> Unit)? = null,
-    onClick: () -> Unit,
-) {
-    val flap = joinFlap(index)
+private fun BroadcastRow(vm: WalkieViewModel, lit: Boolean) {
+    val shape = RoundedCornerShape(VaniRadiusBubble)
     Row(
-        modifier
-            .fillMaxWidth()
-            .defaultMinSize(minHeight = 68.dp)
-            .background(if (lit) VaniColors.PanelLit else Color.Transparent)
-            .graphicsLayer {
-                rotationX = -58f * (1f - flap)
-                cameraDistance = 14f * density
-                alpha = 0.2f + 0.8f * flap
-            }
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+        Modifier.fillMaxWidth().defaultMinSize(minHeight = 64.dp)
+            .background(if (lit) VaniColors.PanelLit else VaniColors.Panel, shape)
+            .border(1.dp, if (lit) VaniColors.Ink else VaniColors.Rule, shape)
+            .clickable(role = Role.Button) { vm.selectChannel(Address.ALL_ID); vm.selectPane(Pane.Talk) }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Box(Modifier.width(22.dp), contentAlignment = Alignment.Center) { leading?.invoke() }
-        Spacer(Modifier.width(11.dp))
+        Box(
+            Modifier.size(40.dp).background(VaniColors.PanelRaised, CircleShape)
+                .border(1.dp, VaniColors.Rule, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Outlined.Public, null, tint = VaniColors.InkDim, modifier = Modifier.size(18.dp))
+        }
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    title,
-                    style = VaniType.titleLarge.copy(fontWeight = if (lit) FontWeight.Bold else FontWeight.Medium),
-                    color = if (lit) VaniColors.Ink else VaniColors.InkDim,
-                    maxLines = 1
-                )
-                if (lit) {
-                    Spacer(Modifier.width(8.dp))
-                    Lamp(VaniColors.Alert)
-                    Spacer(Modifier.width(5.dp))
-                    Caps("LIT", VaniType.labelSmall.copy(fontWeight = FontWeight.Bold), color = VaniColors.Alert)
+            Text("All · broadcast", style = VaniType.titleLarge, color = VaniColors.Ink)
+            Text(
+                "every phone in range · each translates on receipt",
+                style = VaniType.labelMedium, color = VaniColors.InkDim
+            )
+        }
+        Text(
+            "${vm.threadFor(Address.ALL_ID).size} line${if (vm.threadFor(Address.ALL_ID).size == 1) "" else "s"}",
+            style = VaniType.labelMedium, color = VaniColors.InkFaint
+        )
+    }
+}
+
+@Composable
+private fun YouCard(vm: WalkieViewModel) {
+    Group("You") {
+        VaniCard {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Avatar(initials(vm.ui.name.ifBlank { "VANI" }))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        vm.ui.name.ifBlank { "This phone" },
+                        style = VaniType.titleLarge, color = VaniColors.Ink, maxLines = 1
+                    )
+                    Text(
+                        "${vm.ui.src.native} · ${vm.ui.src.label}",
+                        style = VaniType.labelMedium, color = VaniColors.InkDim
+                    )
                 }
-            }
-            Spacer(Modifier.height(3.dp))
-            if (preview != null) {
-                Text(
-                    preview.text,
-                    style = VaniType.bodySmall.copy(fontWeight = if (preview.outgoing) FontWeight.Normal else FontWeight.Medium),
-                    color = VaniColors.Ink,
-                    maxLines = 1
-                )
-            } else {
-                Text(sub, style = VaniType.labelSmall, color = VaniColors.InkFaint, maxLines = 2)
-            }
-            Spacer(Modifier.height(5.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                LangTag(if (lines > 0) "$tag · $lines line${if (lines == 1) "" else "s"}" else tag)
-                if (bars >= 0) {
-                    Spacer(Modifier.width(10.dp))
-                    SignalBars(bars = bars, tint = if (bars <= 1) VaniColors.Alert else VaniColors.InkDim)
-                    Spacer(Modifier.width(6.dp))
-                    Text("${bars}/4", style = VaniType.labelSmall, color = VaniColors.InkFaint)
-                }
+                GhostButton("Edit", onClick = { vm.selectPane(Pane.Setup) }, minHeight = 36.dp)
             }
         }
-        if (age != null) {
-            Column(Modifier.width(52.dp), horizontalAlignment = Alignment.End) {
-                Text(age, style = VaniType.labelSmall, color = VaniColors.InkFaint)
-                Text("ago", style = VaniType.labelSmall, color = VaniColors.InkFaint.copy(alpha = 0.7f))
-            }
-        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            "Others see this name in their scan. Set it once in Setup.",
+            style = VaniType.labelSmall, color = VaniColors.InkFaint
+        )
     }
 }
 
-@Composable
-private fun LangTag(text: String) {
-    Box(
-        Modifier
-            .background(VaniColors.PanelRaised, RoundedCornerShape(VaniRadiusChip))
-            .border(1.dp, VaniColors.Rule, RoundedCornerShape(VaniRadiusChip))
-            .padding(horizontal = 8.dp, vertical = 3.dp)
-    ) {
-        Text(text, style = VaniType.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = VaniColors.InkDim)
-    }
-}
-
-/**
- * The split-flap train: a node turning up in the sweep rotates down into place, staggered by its
- * position, so the mesh arriving is something watched rather than read.
- */
-@Composable
-private fun joinFlap(index: Int): Float {
-    val reduce = reduceMotion()
-    val a = remember { Animatable(if (reduce) 1f else 0f) }
-    LaunchedEffect(Unit) {
-        if (!reduce) a.animateTo(1f, tween(380, delayMillis = 60 + index * 70, easing = FastOutSlowInEasing))
-    }
-    return a.value
-}
-
-/** The OS "remove animations" setting, which a native app obeys rather than reinterprets. */
-@Composable
-private fun reduceMotion(): Boolean {
-    val cr = LocalView.current.context.contentResolver
-    return remember(cr) {
-        runCatching {
-            android.provider.Settings.Global.getFloat(cr, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE)
-        }.getOrDefault(1f) == 0f
-    }
-}
-
-// ------------------------------------------------------------------ the lit channel
+// ------------------------------------------------------------------ talk
 
 @Composable
-private fun ChannelThread(vm: WalkieViewModel) {
+private fun TalkPane(vm: WalkieViewModel, requestMic: () -> Boolean) {
     val chan = vm.ui.active
     val peer = vm.peerKnown(chan)
-    val inRange = chan == Address.ALL_ID || vm.peerById(chan) != null
+    val broadcast = chan == Address.ALL_ID
     val msgs = vm.threadFor(chan)
-    val state = when {
-        !inRange -> "out of range"
-        vm.channelDeliverable() -> "can deliver"
-        else -> "cannot deliver"
-    }
-    val stateColor = if (state == "can deliver") VaniColors.Signal else VaniColors.Alert
     val list = rememberLazyListState()
     LaunchedEffect(msgs.size, msgs.lastOrNull()?.text) {
         if (msgs.isNotEmpty()) list.animateScrollToItem(msgs.lastIndex)
     }
     var draft by rememberSaveable(chan) { mutableStateOf("") }
+    val inRange = broadcast || vm.peerById(chan) != null
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Caps(
-                    if (chan == Address.ALL_ID) "Broadcast"
-                    else peer?.name?.takeIf { it.isNotBlank() } ?: chan,
-                    VaniType.titleSmall.copy(fontWeight = FontWeight.Bold), color = VaniColors.InkDim
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    when {
-                        chan == Address.ALL_ID -> "one transmission · every phone translates on receipt"
-                        !inRange -> "last heard ${since(peer?.lastHeardMs ?: 0L)} ago · nothing reaches it now"
-                        else -> "personal · what arrives is turned into ${vm.ui.tgt.native} here"
-                    },
-                    style = VaniType.labelSmall, color = VaniColors.InkFaint, maxLines = 2
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    state,
-                    style = VaniType.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = stateColor
-                )
-                Spacer(Modifier.width(6.dp))
-                Lamp(stateColor)
-            }
-        }
-        Rule()
+    Column(Modifier.fillMaxSize().statusBarsPadding()) {
+        PeerHead(vm, peer, broadcast, inRange)
         Box(Modifier.weight(1f)) {
             if (msgs.isEmpty()) {
                 Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 44.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 44.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Caps("Nothing on this channel yet", VaniType.titleSmall, color = VaniColors.InkDim)
+                    Text(
+                        "Nothing on this channel yet",
+                        style = VaniType.titleSmall, color = VaniColors.InkDim
+                    )
                     Spacer(Modifier.height(9.dp))
                     Text(
                         "Hold the bar below and speak, or type. Your words go out as you said them; " +
@@ -459,73 +358,151 @@ private fun ChannelThread(vm: WalkieViewModel) {
             } else {
                 LazyColumn(
                     state = list,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(11.dp)
+                    modifier = Modifier.fillMaxSize().screenGutter(),
+                    contentPadding = PaddingValues(top = 6.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // One turn shares an id between the line sent and the line spoken, so the
-                    // bubble key has to carry which half it is.
+                    // One turn shares an id between the line sent and the line spoken, so the key
+                    // has to carry which half it is.
                     items(msgs, key = { "${it.id}-${if (it.outgoing) "out" else "in"}" }) { m ->
-                        Bubble(m) { vm.replay(m.id) }
+                        TurnBubble(m) { vm.replay(m.id) }
                     }
                 }
             }
         }
-        Composer(vm, draft, onDraft = { draft = it }, onSend = { vm.sendMessage(draft); draft = "" })
+        PttZone(vm, requestMic, draft, { draft = it }, { vm.sendMessage(draft); draft = "" })
+        Spacer(Modifier.height(NavClearance))
     }
 }
 
-/** Reading order everyone already knows: mine right in signal green, theirs left in panel grey. */
+/** `.peer-head` - who this thread is with, what the two phones speak, and where the next send goes. */
 @Composable
-internal fun Bubble(m: Msg, onReplay: () -> Unit) {
+private fun PeerHead(vm: WalkieViewModel, peer: com.itantra.walkie.net.Peer?, broadcast: Boolean, inRange: Boolean) {
+    Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (broadcast) {
+                Box(
+                    Modifier.size(34.dp).background(VaniColors.PanelRaised, CircleShape)
+                        .border(1.dp, VaniColors.Rule, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) { Icon(Icons.Outlined.Public, null, tint = VaniColors.InkDim, modifier = Modifier.size(16.dp)) }
+            } else Avatar(initials(peer?.name?.takeIf { it.isNotBlank() } ?: peer?.id ?: "?"), size = 34.dp)
+            Column(Modifier.weight(1f)) {
+                Text(
+                    when {
+                        broadcast -> "All · broadcast"
+                        peer?.name?.isNotBlank() == true -> peer.name
+                        else -> peer?.id ?: "No channel chosen"
+                    },
+                    style = VaniType.titleLarge, color = VaniColors.Ink, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${vm.ui.src.native} ⇄ ${vm.ui.tgt.native}",
+                    style = VaniType.labelMedium, color = VaniColors.InkDim
+                )
+            }
+            Chip(
+                text = if (inRange) "In range" else "Out of range",
+                tone = if (inRange) ChipTone.On else ChipTone.Warn,
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Where the next send goes. The direct pill carries the peer's own name, the way the
+            // export labels it, because "Direct" to a crew means the person they are talking to.
+            ReplayPill(
+                label = peer?.name?.takeIf { it.isNotBlank() }?.substringBefore(" ") ?: "Direct",
+                active = !broadcast,
+                onClick = { if (broadcast) vm.selectPane(Pane.Mesh) },
+            )
+            ReplayPill(
+                label = "Broadcast", active = broadcast,
+                onClick = { vm.selectChannel(Address.ALL_ID) },
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                vm.ui.status.ifBlank { "idle" },
+                style = VaniType.labelSmall, color = VaniColors.InkFaint,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 150.dp).align(Alignment.CenterVertically)
+            )
+        }
+        Rule()
+    }
+}
+
+/**
+ * A turn, drawn the way the design reads one: who and when above the bubble, the words as they were
+ * said, the arrow line naming where they went, the result in the reader's language, the tone the
+ * caller arrived with, and the delivery claim in words.
+ */
+@Composable
+internal fun TurnBubble(m: Msg, onReplay: () -> Unit) {
+    val sent = m.outgoing
     val shape = RoundedCornerShape(
         topStart = VaniRadiusBubble, topEnd = VaniRadiusBubble,
-        bottomStart = if (m.outgoing) VaniRadiusBubble else VaniRadiusChip,
-        bottomEnd = if (m.outgoing) VaniRadiusChip else VaniRadiusBubble
+        bottomStart = if (sent) VaniRadiusBubble else 4.dp,
+        bottomEnd = if (sent) 4.dp else VaniRadiusBubble,
     )
     Column(
         Modifier.fillMaxWidth(),
-        horizontalAlignment = if (m.outgoing) Alignment.End else Alignment.Start
+        horizontalAlignment = if (sent) Alignment.End else Alignment.Start
     ) {
-        Column(Modifier.widthIn(max = 306.dp)) {
-            Row(
-                Modifier
-                    .background(if (m.outgoing) VaniColors.SignalDeep else VaniColors.PanelRaised, shape)
-                    .border(1.dp, if (m.outgoing) VaniColors.SignalEdge else VaniColors.Rule, shape)
-                    .padding(start = 13.dp, end = 8.dp, top = 10.dp, bottom = 9.dp),
-                verticalAlignment = Alignment.Bottom
+        Text(
+            "${m.who.ifBlank { if (sent) "You" else "peer" }} · ${TimeFormat.format(Date(m.atMs))}",
+            style = VaniLabel.eyebrow, color = VaniColors.InkDim,
+            modifier = Modifier.padding(bottom = 4.dp, start = if (sent) 6.dp else 0.dp, end = if (sent) 0.dp else 6.dp)
+        )
+        Column(Modifier.widthIn(max = 320.dp)) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .background(if (sent) VaniColors.SignalDeep else VaniColors.Panel, shape)
+                    .border(1.dp, if (sent) VaniColors.SignalBorder else VaniColors.Rule, shape)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
             ) {
-                Column(Modifier.weight(1f, fill = false)) {
-                    Text(m.text.ifBlank { "…" }, style = VaniType.bodyLarge, color = VaniColors.Ink)
-                    Spacer(Modifier.height(3.dp))
-                    Text(
-                        TimeFormat.format(Date(m.atMs)),
-                        style = VaniType.labelSmall, color = VaniColors.InkFaint,
-                        modifier = Modifier.padding(bottom = 1.dp)
-                    )
+                if (m.origin.isNotBlank()) {
+                    Text(m.origin, style = VaniType.bodySmall, color = VaniColors.InkDim, maxLines = 4,
+                        overflow = TextOverflow.Ellipsis)
+                    ArrowLine(m.path.ifBlank { "spoken to you" })
+                } else if (m.path.isNotBlank()) {
+                    ArrowLine(m.path)
                 }
-                if (m.hasAudio) {
-                    Spacer(Modifier.width(2.dp))
-                    Box(
-                        Modifier.size(44.dp).clickable(role = Role.Button, onClick = onReplay),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            if (m.speaking) Icons.Filled.VolumeUp else Icons.Outlined.VolumeUp,
-                            contentDescription = if (m.speaking) "speaking" else "play this line again",
-                            tint = if (m.speaking) VaniColors.Alert else VaniColors.InkDim,
-                            modifier = Modifier.size(20.dp)
-                        )
+                Text(m.text.ifBlank { "…" }, style = VaniType.bodyLarge, color = VaniColors.Ink)
+                if (m.toneLabel.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Rule()
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(VaniIcons.Mic, null, tint = VaniColors.InkDim, modifier = Modifier.size(12.dp))
+                        Text(m.toneLabel, style = VaniLabel.tone, color = VaniColors.InkDim, maxLines = 1)
                     }
                 }
             }
-            if (m.note.isNotBlank()) {
-                Text(
-                    m.note,
-                    style = VaniType.labelSmall,
-                    color = if (m.speaking) VaniColors.Alert else VaniColors.InkFaint,
-                    textAlign = if (m.outgoing) TextAlign.End else TextAlign.Start,
-                    modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 4.dp)
+            if (m.status.isNotBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    modifier = Modifier.padding(start = 6.dp, top = 6.dp)
+                ) {
+                    Icon(
+                        if (m.statusOk) VaniIcons.Check else VaniIcons.Info, null,
+                        tint = if (m.statusOk) VaniColors.InkDim else VaniColors.Alert,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Text(
+                        m.status, style = VaniType.labelMedium.copy(letterSpacing = 0.2.sp),
+                        color = if (m.statusOk) VaniColors.InkDim else VaniColors.Alert, maxLines = 2
+                    )
+                }
+            }
+            if (m.hasAudio) {
+                ReplayPill(
+                    label = if (m.speaking) "Playing…" else "Replay voice",
+                    active = m.speaking,
+                    icon = Icons.Outlined.PlayArrow,
+                    onClick = onReplay,
+                    modifier = Modifier.padding(top = 6.dp),
                 )
             }
         }
@@ -533,190 +510,222 @@ internal fun Bubble(m: Msg, onReplay: () -> Unit) {
 }
 
 @Composable
-private fun Composer(vm: WalkieViewModel, draft: String, onDraft: (String) -> Unit, onSend: () -> Unit) {
-    Rule()
-    if (!vm.channelDeliverable()) {
-        Text(
-            "No live link to this channel. Sending still writes the line here, marked not sent.",
-            style = VaniType.labelSmall, color = VaniColors.Alert,
-            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 9.dp)
-        )
-    }
+private fun ArrowLine(text: String) {
     Row(
-        Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.padding(top = 6.dp, bottom = 4.dp).fillMaxWidth()
     ) {
-        ConsoleField(
-            value = draft,
-            onValueChange = { if (it.length <= 400) onDraft(it) },
-            placeholder = "Type to send on this channel…",
-            modifier = Modifier.weight(1f)
-        )
-        Spacer(Modifier.width(8.dp))
-        Box(
-            Modifier
-                .size(48.dp)
-                .background(if (draft.isBlank()) VaniColors.PanelRaised else VaniColors.Signal, CircleShape)
-                .border(1.dp, if (draft.isBlank()) VaniColors.Rule else VaniColors.SignalEdge, CircleShape)
-                .clickable(enabled = draft.isNotBlank(), role = Role.Button) { onSend() },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Filled.Send, "send",
-                tint = if (draft.isBlank()) VaniColors.InkFaint else VaniColors.OnSignal,
-                modifier = Modifier.size(20.dp)
-            )
-        }
+        Text(text, style = VaniLabel.arrow, color = VaniColors.InkDim, maxLines = 1)
+        Box(Modifier.weight(1f).height(1.dp).background(VaniColors.Rule))
     }
 }
 
 // ------------------------------------------------------------------ push to talk
 
 /**
- * Hold to talk: press opens the microphone and turns the bar the colour of being on air, release
- * closes it and routes what was said to the lit channel. Holding rather than tapping is the
- * walkie convention the audience already knows, and it makes the transmit state unmissable.
+ * `.ptt-zone`: the pipeline naming which leg is running, the hold bar itself, and the typed route
+ * around it. Holding rather than tapping is the walkie convention the audience already knows, and
+ * the bar's own lettering says what it is doing at every moment, so the state never rides on colour.
  */
 @Composable
-private fun TalkBar(vm: WalkieViewModel, requestMic: () -> Boolean) {
+private fun PttZone(
+    vm: WalkieViewModel,
+    requestMic: () -> Boolean,
+    draft: String,
+    onDraft: (String) -> Unit,
+    onSend: () -> Unit,
+) {
     var onAir by remember { mutableStateOf(false) }
     var startedAt by remember { mutableStateOf(0L) }
     val blocked = when {
-        !vm.ready() -> "models are still loading"
-        !vm.micUsable() -> "speech recognition exists for ${Lang.HI.native} only — type on the channel instead"
+        !vm.ready() -> "Models are still loading"
+        !vm.micUsable() -> "No microphone for ${vm.ui.src.native} yet — type it, or change it in Setup"
         else -> null
     }
     val live = onAir && blocked == null
     val now = if (live) Ticker(250L) else System.currentTimeMillis()
-    val held = if (live) "${(((now - startedAt) / 1000L)).toInt()}s on air" else vm.ui.src.native
-    val shape = RoundedCornerShape(VaniRadius)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 4.dp)
-            .height(76.dp)
-            .background(if (live) VaniColors.Signal else VaniColors.PanelRaised, shape)
-            .border(1.dp, if (live) VaniColors.SignalEdge else VaniColors.Rule, shape)
-            .pointerInput(blocked == null) {
-                awaitEachGesture {
-                    if (blocked != null) return@awaitEachGesture
-                    awaitFirstDown(requireUnconsumed = false)
-                    if (!requestMic()) return@awaitEachGesture
-                    startedAt = System.currentTimeMillis()
-                    onAir = true
-                    vm.startTalk()
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.changes.none { it.pressed }) break
-                    }
-                    onAir = false
-                    vm.finishTalk()
-                }
+    val held = ((now - startedAt) / 1000L).toInt()
+    val busy = vm.ui.status.startsWith("decoding") || vm.ui.status.startsWith("incoming") ||
+        vm.ui.status.startsWith("speaking")
+    val shape = RoundedCornerShape(VaniRadiusBubble)
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Pipeline(
+            visible = live || busy,
+            stages = when {
+                live -> Triple(StageState.Active, StageState.Waiting, StageState.Waiting)
+                vm.ui.status.startsWith("decoding") -> Triple(StageState.Active, StageState.Waiting, StageState.Waiting)
+                vm.ui.status.startsWith("incoming") || vm.ui.status.contains("translat") ->
+                    Triple(StageState.Done, StageState.Active, StageState.Waiting)
+                else -> Triple(StageState.Done, StageState.Done, StageState.Active)
             }
-            .padding(start = 16.dp, end = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            Icons.Filled.Mic, null,
-            tint = if (live) VaniColors.OnSignal else if (blocked == null) VaniColors.Signal else VaniColors.InkFaint,
-            modifier = Modifier.size(26.dp)
         )
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f)) {
+        Spacer(Modifier.height(14.dp))
+        Column(
+            Modifier.fillMaxWidth().defaultMinSize(minHeight = 76.dp)
+                .background(VaniColors.Panel, shape)
+                .border(1.dp, if (live) VaniColors.Signal else VaniColors.Rule, shape)
+                .pointerInput(blocked == null) {
+                    awaitEachGesture {
+                        if (blocked != null) return@awaitEachGesture
+                        awaitFirstDown(requireUnconsumed = false)
+                        if (!requestMic()) return@awaitEachGesture
+                        startedAt = System.currentTimeMillis()
+                        onAir = true
+                        vm.startTalk()
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            if (event.changes.none { it.pressed }) break
+                        }
+                        onAir = false
+                        vm.finishTalk()
+                    }
+                }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            if (live) WaveBars()
+            Box(
+                Modifier.size(44.dp)
+                    .background(if (live) VaniColors.Signal else VaniColors.PanelRaised, CircleShape)
+                    .border(1.dp, if (live) VaniColors.Signal else VaniColors.Rule, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Outlined.Mic, null,
+                    tint = when {
+                        live -> VaniColors.OnSignal
+                        blocked == null -> VaniColors.Ink
+                        else -> VaniColors.InkFaint
+                    },
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
             Text(
                 when {
-                    blocked != null -> "Push to talk unavailable"
-                    live -> "On air — release to send"
+                    blocked != null -> "Type to send"
+                    live -> "Release to send"
                     else -> "Hold to talk"
                 },
-                style = VaniType.labelLarge.copy(fontWeight = FontWeight.Bold),
-                color = if (live) VaniColors.OnSignal else VaniColors.Ink
+                style = VaniLabel.stage.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.9.sp),
+                color = VaniColors.Ink,
             )
-            Spacer(Modifier.height(3.dp))
             Text(
-                blocked ?: "${vm.channelName()} · $held",
+                when {
+                    blocked != null -> blocked
+                    live -> "%d:%02d".format(held / 60, held % 60)
+                    else -> "${vm.ui.src.native} · ${vm.channelName()}"
+                },
                 style = VaniType.labelSmall,
-                color = if (live) VaniColors.OnSignal.copy(alpha = 0.85f) else VaniColors.InkFaint,
-                maxLines = 2
+                color = if (blocked == null) VaniColors.InkDim else VaniColors.Alert,
+                textAlign = TextAlign.Center, maxLines = 2,
             )
         }
-        if (live) SignalBars(bars = 4, tint = VaniColors.OnSignal)
-        else Lamp(if (blocked == null) VaniColors.Signal else VaniColors.InkFaint, ring = true)
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            VaniField(
+                value = draft,
+                onValueChange = { if (it.length <= 400) onDraft(it) },
+                placeholder = "Or type — then send",
+                modifier = Modifier.weight(1f)
+            )
+            Box(
+                Modifier.size(48.dp).background(VaniColors.Ground, CircleShape)
+                    .border(1.dp, if (draft.isBlank()) VaniColors.Rule else VaniColors.Signal, CircleShape)
+                    .clickable(enabled = draft.isNotBlank(), role = Role.Button, onClick = onSend),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Outlined.Send, "send",
+                    tint = if (draft.isBlank()) VaniColors.InkFaint else VaniColors.Ink,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+/** `.wave` - the seven bars that move while the microphone is open, and only then. */
+@Composable
+private fun WaveBars() {
+    val reduce = reduceMotion()
+    val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "wave")
+    val heights = listOf(8, 16, 26, 18, 30, 14, 22)
+    Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+        heights.forEachIndexed { i, h ->
+            val s by transition.animateFloat(
+                initialValue = 0.4f, targetValue = 1f,
+                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                    tween(550, delayMillis = i * 70, easing = FastOutSlowInEasing),
+                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+                ), label = "b$i"
+            )
+            Box(
+                Modifier.width(3.dp).height((if (reduce) 1f else s) * h.dp)
+                    .background(VaniColors.Signal, RoundedCornerShape(2.dp))
+            )
+        }
     }
 }
 
 // ------------------------------------------------------------------ navigation
 
 /**
- * A floating Material navigation bar: the destinations are what a dispatcher does plus the bench
- * that proves it works, and the bar carries the brand surface rather than a default elevated sheet.
+ * `.tabbar` - the floating pill. The active cell is `--fg` on a 10% wash, never the accent: the
+ * design allows the mint twice per screen and spends it on the transmitter and the primary action.
  */
 @Composable
-private fun VaniNavBar(dest: Pane, onSelect: (Pane) -> Unit) {
+private fun VaniNavBar(dest: Pane, modifier: Modifier = Modifier, onSelect: (Pane) -> Unit) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 10.dp)
-            .height(62.dp)
+        modifier.padding(bottom = 16.dp)
             .background(VaniColors.PanelRaised, RoundedCornerShape(18.dp))
             .border(1.dp, VaniColors.Rule, RoundedCornerShape(18.dp))
+            .padding(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Pane.values().forEach { d ->
-            val selected = d == dest
             NavCell(
                 label = when (d) {
-                    Pane.Channels -> "Channels"
-                    Pane.OnAir -> "On air"
-                    Pane.Identity -> "Identity"
-                    Pane.Demo -> "Demo"
+                    Pane.Mesh -> "Mesh"; Pane.Talk -> "Talk"; Pane.Setup -> "Setup"; Pane.Demo -> "Demo"
                 },
-                selected = selected,
-                modifier = Modifier.weight(1f),
-                icon = {
-                    val (filled, outline) = when (d) {
-                        Pane.Channels -> Icons.Filled.CellTower to Icons.Outlined.CellTower
-                        Pane.OnAir -> Icons.Filled.Mic to Icons.Outlined.Mic
-                        Pane.Identity -> Icons.Filled.Person to Icons.Outlined.Person
-                        Pane.Demo -> Icons.Filled.Sync to Icons.Outlined.Sync
-                    }
-                    Icon(
-                        if (selected) filled else outline, null,
-                        tint = if (selected) VaniColors.Signal else VaniColors.InkFaint,
-                        modifier = Modifier.size(22.dp)
-                    )
+                icon = when (d) {
+                    Pane.Mesh -> Icons.Outlined.Groups
+                    Pane.Talk -> Icons.Outlined.Mic
+                    Pane.Setup -> Icons.Outlined.Tune
+                    Pane.Demo -> VaniIcons.Replay
                 },
-                onClick = { onSelect(d) }
+                current = d == dest,
+                onClick = { onSelect(d) },
             )
         }
     }
 }
 
+// ------------------------------------------------------------------ shared bits
+
+/** Two initials from a name, the way the design labels a peer: "Meena K." to "MK". */
+private fun initials(name: String): String =
+    name.trim().split(" ").mapNotNull { it.firstOrNull() }.take(2).joinToString("").uppercase()
+        .ifBlank { "V" }
+
+/** The OS "remove animations" setting, which a native app obeys rather than reinterprets. */
 @Composable
-private fun NavCell(
-    label: String,
-    selected: Boolean,
-    modifier: Modifier,
-    icon: @Composable () -> Unit,
-    onClick: () -> Unit,
-) {
-    Column(
-        modifier.fillMaxHeight().clickable(role = Role.Tab, onClick = onClick),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Box(
-            Modifier
-                .width(60.dp)
-                .height(26.dp)
-                .background(if (selected) VaniColors.PanelLit else Color.Transparent, CircleShape),
-            contentAlignment = Alignment.Center
-        ) { icon() }
-        Spacer(Modifier.height(3.dp))
-        Text(
-            label,
-            style = VaniType.labelSmall.copy(fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal),
-            color = if (selected) VaniColors.Signal else VaniColors.InkFaint
-        )
+internal fun reduceMotion(): Boolean {
+    val cr = LocalView.current.context.contentResolver
+    return remember(cr) {
+        runCatching {
+            android.provider.Settings.Global.getFloat(cr, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE)
+        }.getOrDefault(1f) == 0f
     }
+}
+
+/** The brand mark, kept for the panes that show it. It is lettering, not a logo image. */
+@Composable
+internal fun VaniWordmark(modifier: Modifier = Modifier) {
+    Text(
+        "VANI", style = VaniLabel.tab.copy(fontSize = 12.sp, letterSpacing = 2.sp),
+        fontWeight = FontWeight.Bold, color = VaniColors.Ink, modifier = modifier
+    )
 }

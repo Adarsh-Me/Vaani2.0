@@ -10,9 +10,18 @@ import java.nio.LongBuffer
 
 /**
  * Single stitched IndicTrans2 (indic-indic-dist-320M) for ALL pairs.
- * enc(input_ids, attention_mask) -> last_hidden_state; greedy decode with
- * decoder_model (1st step) + decoder_with_past_model (KV cache after).
+ * enc(input_ids, attention_mask) -> last_hidden_state, then a greedy walk through
+ * decoder_model.onnx, which is re-run over the whole partial sentence at every step.
  * enc ids: [src_lang, ...bpe..., </s>]; dec prefix: [</s>, tgt_lang].
+ *
+ * There used to be a second decoder export here, decoder_with_past_model.onnx, 194 MB of
+ * the install. It was never run: its input list is (input_ids, encoder_attention_mask,
+ * 72 past tensors) and it has no encoder_hidden_states at all, because it expects the
+ * cross-attention key/values to arrive pre-computed inside those caches - which nothing
+ * in this app ever produced, since only decoder_model.onnx computes them. The decode loop
+ * fed encoder_hidden_states unconditionally, so the graph could not have accepted a step.
+ * The export and the dead cache plumbing are gone; a real KV-cache path needs a merged
+ * decoder export, not this pair.
  */
 
 class TranslatorEngine(
@@ -20,20 +29,12 @@ class TranslatorEngine(
     res: Bundled,
     threads: Int = 4,
 ) : AutoCloseable {
-    private val opts = OrtSession.SessionOptions().apply { setIntraOpNumThreads(threads) }
+    private val opts = Sessions.options(threads)
     private val enc = sessOrNull(env, res, "$MT_DIR/encoder_model.onnx", opts)
     private val dec = sessOrNull(env, res, "$MT_DIR/decoder_model.onnx", opts)
-    private val decPast = sessOrNull(env, res, "$MT_DIR/decoder_with_past_model.onnx", opts)
     private val tok = SpmTokenizer(res)
 
-    // present.{L}.{decoder.key,decoder.value,encoder.key,encoder.value}, L=0..17 (file order)
-    private val presentNames: List<String> = buildList {
-        for (l in 0..17) for (k in arrayOf("decoder.key", "decoder.value", "encoder.key", "encoder.value"))
-            add("present.$l.$k")
-    }
-
-    /** Either decoder export will do: with_past can start from an empty cache. */
-    fun isReady() = enc != null && (dec != null || decPast != null)
+    fun isReady() = enc != null && dec != null
     var lastError: String = ""
 
     fun translate(text: String, src: Lang, tgt: Lang, maxLen: Int = 64): String =
@@ -90,19 +91,11 @@ class TranslatorEngine(
     }
 
     private fun greedy(flatH: FloatArray, encLen: Int, prefix: List<Int>, maxLen: Int): String {
-        // decoder_model.onnx is the same 320M weights exported a second time only to
-        // provide a "no cache yet" entry point. The with-past graph declares its caches
-        // as [-1, 8, -1, 64], so an empty cache starts the sequence just as well, and
-        // dropping the duplicate export took 151 MB out of the installed app.
-        val d = dec ?: decPast ?: return ""
-        val out = ArrayList<Int>()
-        out += prefix
-        var past: Array<FloatArray>? = null // 72 entries aligned with presentNames
-        var pastShapes: Array<LongArray>? = null
+        val d = dec ?: return ""
+        val out = ArrayList(prefix)
         val encMask = OnnxTensor.createTensor(env, LongBuffer.wrap(LongArray(encLen) { 1L }), longArrayOf(1, encLen.toLong()))
         try {
             repeat(maxLen) {
-                val stepIds = if (past == null) out.toList() else listOf(out.last())
                 val made = ArrayList<OnnxTensor>()
                 fun lb(v: List<Int>): OnnxTensor {
                     val t = OnnxTensor.createTensor(env, LongBuffer.wrap(v.map { it.toLong() }.toLongArray()), longArrayOf(1, v.size.toLong()))
@@ -113,53 +106,21 @@ class TranslatorEngine(
                     made.add(t); return t
                 }
                 val feed = HashMap<String, OnnxTensor>()
-                feed["input_ids"] = lb(stepIds)
+                feed["input_ids"] = lb(out.toList())
                 feed["encoder_hidden_states"] = fb(flatH, longArrayOf(1, encLen.toLong(), 512))
                 feed["encoder_attention_mask"] = encMask
-                val sess = if (past == null) d else (decPast ?: d)
-                if (past == null && dec == null) {
-                    // Empty caches: [1, heads, 0, headDim]
-                    for (nm in presentNames) {
-                        feed["past_key_values." + nm.removePrefix("present.")] =
-                            fb(EMPTY_PAST, longArrayOf(1, 8, 0, 64))
-                    }
-                }
-                if (past != null && decPast != null) {
-                    for (i in presentNames.indices) {
-                        feed["past_key_values." + presentNames[i].removePrefix("present.")] =
-                            fb(past!![i], pastShapes!![i])
-                    }
-                }
                 var next = tok.eos
-                sess.run(feed).use { r ->
+                d.run(feed).use { r ->
                     @Suppress("UNCHECKED_CAST")
                     val logits = ((r.get(0) as OnnxTensor).value as Array<Array<FloatArray>>)
                     val row = logits[0][logits[0].size - 1]
                     var bi = 0; var bv = Float.NEGATIVE_INFINITY
                     for (i in row.indices) if (row[i] > bv) { bv = row[i]; bi = i }
                     next = bi
-                    if (decPast != null) {
-                        try {
-                            val np = Array(72) { FloatArray(0) }
-                            val ns = Array(72) { LongArray(0) }
-                            var ok = true
-                            for (i in 0 until 72) {
-                                @Suppress("UNCHECKED_CAST")
-                                val a = ((r.get(i + 1) as OnnxTensor).value as Array<Array<Array<FloatArray>>>)
-                                val s1 = a.size; val s2 = a[0].size; val s3 = a[0][0].size
-                                val f = FloatArray(s1 * s2 * s3)
-                                var p = 0
-                                for (x in a) for (y in x) for (z in y) for (w in z) f[p++] = w
-                                np[i] = f; ns[i] = longArrayOf(1, s1.toLong(), s2.toLong(), s3.toLong())
-                            }
-                            if (ok) { past = np; pastShapes = ns }
-                        } catch (_: Exception) { past = null; pastShapes = null }
-                    }
                 }
                 for (t in made) if (t !== encMask) t.close()
                 if (next == tok.eos) return tok.decode(out.drop(prefix.size))
                 out += next
-                if (out.size > maxLen + prefix.size) return tok.decode(out.drop(prefix.size))
             }
             return tok.decode(out.drop(prefix.size))
         } finally {
@@ -170,7 +131,6 @@ class TranslatorEngine(
     override fun close() {
         try { enc?.close() } catch (_: Exception) {}
         try { dec?.close() } catch (_: Exception) {}
-        try { decPast?.close() } catch (_: Exception) {}
     }
 
     companion object {
@@ -185,7 +145,6 @@ class TranslatorEngine(
         private const val MT_DIR = "models/translation/indic-indic-dist-320M"
 
         /** Zero-length key/value cache for the first decoding step. */
-        private val EMPTY_PAST = FloatArray(0)
 
         fun sessOrNull(env: OrtEnvironment, res: Bundled, assetPath: String, o: OrtSession.SessionOptions): OrtSession? =
             try { env.createSession(res.buffer(assetPath), o) } catch (_: Exception) { null }

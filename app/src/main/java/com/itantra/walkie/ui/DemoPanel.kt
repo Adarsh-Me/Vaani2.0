@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -67,7 +68,9 @@ import com.itantra.walkie.WalkieViewModel
 fun DemoPanel(vm: WalkieViewModel, requestMic: () -> Boolean) {
     val all = Lang.values().toList()
     val d = vm.ui.demo
-    Column(Modifier.fillMaxSize().background(VaniColors.Ground)) {
+    Column(
+        Modifier.fillMaxSize().background(VaniColors.Ground).statusBarsPadding()
+    ) {
         BenchHead(vm)
         Rule(color = VaniColors.PanelLit)
 
@@ -75,7 +78,7 @@ fun DemoPanel(vm: WalkieViewModel, requestMic: () -> Boolean) {
             BenchTag(
                 tag = "phone 1",
                 sub = "speaks",
-                color = VaniColors.Signal,
+                color = VaniColors.Ink,
                 trailing = {
                     BenchAction("sample in ${d.txLang.label}") { vm.demoSend(vm.demoSample()) }
                 }
@@ -104,7 +107,7 @@ fun DemoPanel(vm: WalkieViewModel, requestMic: () -> Boolean) {
             BenchTag(
                 tag = "phone 2",
                 sub = "hears",
-                color = VaniColors.Alert,
+                color = VaniColors.InkDim,
                 trailing = { VoicePick(d.rxVoice) { vm.setDemoRxVoice(it) } }
             )
             Spacer(Modifier.height(7.dp))
@@ -132,6 +135,19 @@ fun DemoPanel(vm: WalkieViewModel, requestMic: () -> Boolean) {
     }
 }
 
+/**
+ * A shape beside a word. The design never lets a state ride on colour alone, and the bench's wire
+ * row is a state, so the dot is the shape and the text next to it stays the word.
+ */
+@Composable
+private fun Dot(color: Color, ring: Boolean = false) {
+    Box(
+        Modifier.size(if (ring) 14.dp else 9.dp)
+            .then(if (ring) Modifier.border(1.dp, color.copy(alpha = 0.55f), CircleShape) else Modifier),
+        contentAlignment = Alignment.Center
+    ) { Box(Modifier.size(if (ring) 7.dp else 5.dp).background(color, CircleShape)) }
+}
+
 // ------------------------------------------------------------------ head and tags
 
 @Composable
@@ -140,9 +156,9 @@ private fun BenchHead(vm: WalkieViewModel) {
         Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp, top = 9.dp, bottom = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Caps(
+        Text(
             "LOOPBACK BENCH",
-            VaniType.labelMedium.copy(fontWeight = FontWeight.Bold),
+            style = VaniType.labelMedium, fontWeight = FontWeight.Bold,
             color = VaniColors.InkDim
         )
         Spacer(Modifier.width(10.dp))
@@ -159,7 +175,7 @@ private fun BenchHead(vm: WalkieViewModel) {
 @Composable
 private fun BenchTag(tag: String, sub: String, color: Color, trailing: @Composable () -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Lamp(color, ring = true)
+        Dot(color, ring = true)
         Spacer(Modifier.width(8.dp))
         Text(
             tag.uppercase(),
@@ -206,15 +222,15 @@ private fun VoicePick(selected: Voice, onPick: (Voice) -> Unit) {
                 Modifier
                     .padding(start = 5.dp)
                     .size(30.dp)
-                    .background(if (on) VaniColors.SignalDeep else VaniColors.PanelRaised, CircleShape)
-                    .border(1.dp, if (on) VaniColors.SignalEdge else VaniColors.Rule, CircleShape)
+                    .background(if (on) VaniColors.PanelLit else VaniColors.PanelRaised, CircleShape)
+                    .border(1.dp, if (on) VaniColors.Ink else VaniColors.Rule, CircleShape)
                     .clickable(role = Role.Button) { onPick(v) },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     if (v == Voice.F) "F" else "M",
                     style = VaniType.labelSmall.copy(fontWeight = if (on) FontWeight.Bold else FontWeight.Normal),
-                    color = if (on) VaniColors.Signal else VaniColors.InkDim
+                    color = if (on) VaniColors.Ink else VaniColors.InkDim
                 )
             }
         }
@@ -250,7 +266,7 @@ private fun BenchThread(
                 verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
                 items(msgs, key = { it.id }) { m ->
-                    Bubble(m) { onReplay(m.id) }
+                    TurnBubble(m) { onReplay(m.id) }
                 }
             }
         }
@@ -261,7 +277,7 @@ private fun BenchThread(
 
 /**
  * Typing is the reliable half of the bench: the mic covers what [WalkieViewModel.hasVoice]
- * admits (Hindi on the Conformer, the rest on Whisper-base when bundled), so any other
+ * admits (the languages measured against SraVaani - Odia is not one of them), so any other
  * language on this side has to be typed - and a typed line still runs the whole translate and
  * speak path, which is most of what is being tested here. The mic keeps the console's
  * press-and-hold convention: press opens it, release recognises and puts the words on phone 2.
@@ -286,7 +302,7 @@ private fun BenchInput(vm: WalkieViewModel, requestMic: () -> Boolean) {
             .height(52.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ConsoleField(
+        VaniField(
             value = draft,
             onValueChange = { if (it.length <= 300) draft = it },
             placeholder = "type in ${vm.ui.demo.txLang.native}…",
@@ -296,8 +312,8 @@ private fun BenchInput(vm: WalkieViewModel, requestMic: () -> Boolean) {
         Box(
             Modifier
                 .size(46.dp)
-                .background(if (draft.isBlank()) VaniColors.PanelRaised else VaniColors.Signal, CircleShape)
-                .border(1.dp, if (draft.isBlank()) VaniColors.Rule else VaniColors.SignalEdge, CircleShape)
+                .background(VaniColors.Ground, CircleShape)
+                .border(1.dp, if (draft.isBlank()) VaniColors.Rule else VaniColors.Ink, CircleShape)
                 .clickable(enabled = draft.isNotBlank(), role = Role.Button) {
                     vm.demoSend(draft); draft = ""
                 },
@@ -305,7 +321,7 @@ private fun BenchInput(vm: WalkieViewModel, requestMic: () -> Boolean) {
         ) {
             Icon(
                 Icons.Filled.Send, "send from phone 1",
-                tint = if (draft.isBlank()) VaniColors.InkFaint else VaniColors.OnSignal,
+                tint = if (draft.isBlank()) VaniColors.InkFaint else VaniColors.Ink,
                 modifier = Modifier.size(18.dp)
             )
         }
@@ -345,7 +361,7 @@ private fun BenchInput(vm: WalkieViewModel, requestMic: () -> Boolean) {
                 Icons.Filled.Mic, if (live) "on air, release to send" else "hold to talk as phone 1",
                 tint = when {
                     live -> VaniColors.OnSignal
-                    blocked == null -> VaniColors.Signal
+                    blocked == null -> VaniColors.Ink
                     else -> VaniColors.InkFaint
                 },
                 modifier = Modifier.size(22.dp)
@@ -360,7 +376,7 @@ private fun BenchInput(vm: WalkieViewModel, requestMic: () -> Boolean) {
         },
         style = VaniType.labelSmall,
         color = if (live) VaniColors.Signal else VaniColors.InkFaint,
-        maxLines = 1, overflow = TextOverflow.Ellipsis,
+        maxLines = 2, overflow = TextOverflow.Ellipsis,
         modifier = Modifier.padding(start = 4.dp)
     )
 }
@@ -384,11 +400,11 @@ private fun WireRow(vm: WalkieViewModel) {
             .padding(start = 16.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Lamp(
+        Dot(
             when {
                 d.running -> VaniColors.Alert
                 d.wire.isBlank() -> VaniColors.InkFaint
-                else -> VaniColors.Signal
+                else -> VaniColors.Ink
             },
             ring = pulse
         )

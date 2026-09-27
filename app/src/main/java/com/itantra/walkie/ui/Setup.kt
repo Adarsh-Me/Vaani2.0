@@ -1,6 +1,8 @@
 package com.itantra.walkie.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,8 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -23,228 +24,207 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.itantra.walkie.AppConfig
 import com.itantra.walkie.Lang
 import com.itantra.walkie.Voice
 import com.itantra.walkie.WalkieViewModel
 
 /**
- * The one question this screen has to answer is: who are you on the mesh, and in which two
- * languages does that work. Name first, because it is what the other phones see; then what you
- * say, then what you want back.
+ * Setup: who this phone is on the mesh, and in which two languages that work happens.
  *
- * The voice input line is the honest constraint: the mic is real for every language
- * [WalkieViewModel.hasVoice] admits (Hindi on the specialist Conformer, the rest on
- * Whisper-base when it is bundled), and a language without it is offered as typed
- * input rather than as a dead microphone.
+ * Ported from `vani-setup.html`. The export's "Speech pack" switch is the one control here that
+ * the real app cannot honour: the recognition model is bundled in the APK, not fetched, so a
+ * toggle would either do nothing or lie about what the phone can hear. It is a readout instead -
+ * the same facts, in the same place, with the numbers this build actually measured.
+ *
+ * Everything the screen claims about capability comes from [WalkieViewModel.hasVoice], which is
+ * the measured set, so a language whose mic was never tested reads as typed rather than as a dead
+ * microphone the operator discovers in the field.
  */
 @Composable
 fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
-    val all = Lang.values().toList()
     var name by remember { mutableStateOf(vm.ui.name) }
-    var spoken by remember { mutableStateOf(vm.ui.spoken.ifEmpty { listOf(Lang.HI) }) }
-    var micIn by remember { mutableStateOf(if (vm.ui.src in all) vm.ui.src else Lang.HI) }
-    var hearIn by remember { mutableStateOf(vm.ui.tgt) }
-
-    val canJoin = name.isNotBlank() && spoken.isNotEmpty() && micIn in spoken && hearIn != micIn
+    val canJoin = name.isNotBlank()
 
     Column(
-        Modifier
-            .fillMaxSize()
+        Modifier.fillMaxSize()
             .background(VaniColors.Ground)
     ) {
-        // The wordmark opens the phone before it has a name. Inside the console the strip already
-        // carries it, so the identity pane does not repeat it.
-        if (firstRun) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
-                verticalAlignment = Alignment.Bottom
-            ) {
-                VaniWordmark(health = 0.12f, modifier = Modifier.width(104.dp))
-                Spacer(Modifier.width(16.dp))
-                Text(
-                    "Set up once · every phone in range reads it",
-                    style = VaniType.labelMedium, color = VaniColors.InkFaint, maxLines = 2
-                )
-            }
-            Rule()
-        }
         Column(
-            Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(bottom = 20.dp)
+            Modifier.weight(1f).verticalScroll(rememberScrollState()).statusBarsPadding()
+                .padding(bottom = if (firstRun) 20.dp else NavClearance)
         ) {
-            if (firstRun) {
-                Text(
-                    "Nothing here goes over a network. Your phone is one radio among the others in " +
-                        "range, and every translation happens inside it.",
-                    style = VaniType.bodyMedium, color = VaniColors.InkDim,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 4.dp)
-                )
-            }
-
-            Section("Name on the mesh", "This is what every other phone shows in its scan.") {
-                ConsoleField(
-                    value = name,
-                    onValueChange = { if (it.length <= 24) name = it },
-                    placeholder = "e.g. Asha · Rampur 12",
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            Section("Languages you speak", "Pick every one you can hold a conversation in.") {
-                LangGrid(
-                    langs = all,
-                    selected = spoken,
-                    subFor = { if (vm.hasVoice(it)) "${it.label} · voice" else "${it.label} · typed" },
-                    onPick = { lg ->
-                        spoken = if (spoken.any { it == lg }) {
-                            (spoken - lg).toList().ifEmpty { listOf(lg) }
-                        } else spoken + lg
-                        if (micIn !in spoken) micIn = spoken.first()
-                        if (hearIn in spoken && hearIn == micIn) hearIn = (all - micIn).first()
+            AppTop(
+                title = "Setup",
+                sub = if (firstRun) "Spoken once — every phone in range reads it"
+                else "Who this phone is to the mesh",
+            )
+            Column(Modifier.screenGutter()) {
+                Group("Display name") {
+                    VaniCard {
+                        Column {
+                            Text(
+                                "This is what every other phone sees in their scan.",
+                                style = VaniType.bodySmall, color = VaniColors.InkDim
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            VaniField(
+                                value = name,
+                                onValueChange = { if (it.length <= 20) name = it },
+                                placeholder = "e.g. Ananya",
+                                maxLength = 20,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            CapLine("Others will see: ", name.trim().ifBlank { "(name not set)" })
+                        }
                     }
-                )
-            }
+                }
 
-            Section(
-                "Speak into the mic in",
-                "Voice input works where you see · voice. Any other language you type, and it is " +
-                    "still spoken back to you."
-            ) {
-                LangGrid(
-                    langs = spoken,
-                    selected = listOf(micIn),
-                    subFor = { if (vm.hasVoice(it)) null else "typed input" },
-                    onPick = { micIn = it }
-                )
-            }
-
-            Section(
-                "Read and hear replies in",
-                "Your phone turns every incoming transmission into this language locally, whatever " +
-                    "it arrived as."
-            ) {
-                LangGrid(
-                    langs = all,
-                    selected = listOf(hearIn),
-                    enabled = { it != micIn },
-                    subFor = { if (it == Lang.EN) "no EN translation yet" else null },
-                    onPick = { hearIn = it }
-                )
-            }
-
-            if (!firstRun) {
-                Section("Voice that answers", "Both cuts are the same model; the character differs.") {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Voice.values().forEach { v ->
-                            PanelOption(
-                                label = if (v == Voice.F) "Female" else "Male",
-                                sub = null,
-                                selected = vm.ui.voice == v,
-                                enabled = true,
-                                modifier = Modifier.weight(1f),
-                                onClick = { vm.setVoice(v) }
+                Group("Speech pack") {
+                    VaniCard {
+                        Column {
+                            Readout("Recognition model", "SraVaani-1.0 · int8 · bundled in the app")
+                            Readout(
+                                "Languages the mic is measured on",
+                                "${Lang.values().count { vm.hasVoice(it) }} of ${Lang.values().size}"
+                            )
+                            Readout("Pack size on this phone", "520 MB, inside the 970 MB app")
+                            Spacer(Modifier.height(8.dp))
+                            Rule()
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Nothing is fetched at runtime: the model ships in the app so the " +
+                                    "phone keeps working with no network, which is the point of it.",
+                                style = VaniType.labelSmall, color = VaniColors.InkFaint
                             )
                         }
                     }
-                    Spacer(Modifier.height(10.dp))
-                    GhostButton("Test voice on this phone") { vm.testVoice() }
                 }
-                Rule(color = VaniColors.PanelLit)
-                ToggleRow(
-                    label = "Translate every transmission",
-                    sub = "Off sends your own words across unchanged.",
-                    checked = vm.ui.translateOn,
-                    onChange = { vm.setTranslateEnabled(it) }
-                )
-                Rule(color = VaniColors.PanelLit)
-                ToggleRow(
-                    label = "Soften the male voice",
-                    sub = "Off answers at the raw pitch and brightness the model solved, which " +
-                        "sits higher and buzzier than the voice it was cloned from.",
-                    checked = vm.ui.softMale,
-                    onChange = { vm.setSoftMale(it) }
-                )
-                Rule(color = VaniColors.PanelLit)
-                ToggleRow(
-                    label = "Speak back in the caller's tone",
-                    sub = "Off always answers in the flat, tuned reading the voice was built with.",
-                    checked = vm.ui.matchTone,
-                    onChange = { vm.setMatchTone(it) }
-                )
-                Rule(color = VaniColors.PanelLit)
-                ToggleRow(
-                    label = "Turbo solve",
-                    sub = "Fewer flow steps: faster, less settled.",
-                    checked = vm.ui.turbo,
-                    onChange = { vm.setTurbo(it) }
-                )
-                Rule(color = VaniColors.PanelLit)
-                // Inside the console the action belongs to the form it commits, not to a bar that
-                // would stack on top of the readout, the talk bar and the navigation.
-                ConsoleButton(
-                    label = "Save identity",
-                    enabled = canJoin,
-                    modifier = Modifier.padding(top = 18.dp)
-                ) {
-                    vm.completeSetup(name, spoken, micIn, hearIn)
-                    onDone()
-                }
-            }
-        }
 
-        if (firstRun) {
-            // On the way in the action never scrolls away: it is the door into the mesh.
-            Column(Modifier.fillMaxWidth().background(VaniColors.Panel)) {
-                Rule()
-                ConsoleButton(
-                    label = "Join the mesh",
+                Group("Your voice") {
+                    VaniCard {
+                        Column {
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Voice.values().forEach { v ->
+                                    VoiceOption(
+                                        label = if (v == Voice.F) "Female" else "Male",
+                                        selected = vm.ui.voice == v,
+                                        modifier = Modifier.weight(1f),
+                                    ) { vm.setVoice(v) }
+                                }
+                            }
+                            Spacer(Modifier.height(14.dp))
+                            Rule()
+                            Spacer(Modifier.height(10.dp))
+                            SwitchRow(
+                                "Tone matching",
+                                "Reply is rendered in the shade the caller used · measured, not felt",
+                                vm.ui.matchTone
+                            ) { vm.setMatchTone(it) }
+                            Spacer(Modifier.height(12.dp))
+                            SwitchRow(
+                                "Male voice trim",
+                                "Walks the brighter solve back toward the pitch of its own prompt",
+                                vm.ui.softMale
+                            ) { vm.setSoftMale(it) }
+                            Spacer(Modifier.height(12.dp))
+                            SwitchRow(
+                                "Translate every transmission",
+                                "Off sends your own words across unchanged",
+                                vm.ui.translateOn
+                            ) { vm.setTranslateEnabled(it) }
+                            Spacer(Modifier.height(12.dp))
+                            SwitchRow(
+                                "Turbo solve",
+                                if (vm.ui.turbo) "Shorter donor prompt · ${AppConfig.TTS_NFE_TURBO} flow steps · answers in ~3 s"
+                                else "Whole donor prompt · ${AppConfig.TTS_NFE_FULL} flow steps · the fullest voice",
+                                vm.ui.turbo
+                            ) { vm.setTurbo(it) }
+                            Spacer(Modifier.height(14.dp))
+                            PrimaryButton(
+                                label = "Test voice on this phone",
+                                icon = VaniIcons.Speak,
+                                onClick = { vm.testVoice() }
+                            )
+                            if (vm.ui.lastText.isNotBlank()) {
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    vm.ui.status, style = VaniType.labelSmall, color = VaniColors.InkFaint
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Group("What to expect") {
+                    Notice(
+                        androidx.compose.ui.text.buildAnnotatedString {
+                            append("Every language is loaded in the app itself. ")
+                            append(
+                                "A transmission is recognised in the sender's own language and turned " +
+                                    "into this phone's, so nobody picks a language per message. "
+                            )
+                            append("Translation is Indic ⇄ Indic. ")
+                            append(
+                                "English carries your words through unchanged and says so on the " +
+                                    "bubble. The male cut has its own reference voice in all eleven " +
+                                    "languages; the female cut is still donor-backed for मराठी, " +
+                                    "ગુજરાતી, తెలుగు, ಕನ್ನಡ, മലയാളം, বাংলা and ଓଡ଼ିଆ, so there it " +
+                                    "borrows a neighbouring speaker."
+                            )
+                        }
+                    )
+                }
+
+                Spacer(Modifier.height(16.dp))
+                PrimaryButton(
+                    label = if (firstRun) "Save — go find people" else "Save identity",
                     enabled = canJoin,
-                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp)
                 ) {
-                    vm.completeSetup(name, spoken, micIn, hearIn)
+                    vm.completeSetup(name, vm.ui.spoken.ifEmpty { listOf(Lang.HI, Lang.EN) }, vm.ui.src, vm.ui.tgt)
                     onDone()
                 }
+                Spacer(Modifier.height(12.dp))
             }
         }
     }
 }
 
-/**
- * A labelled block of the panel: caps label, one line of why it matters, the controls, then the
- * hairline that closes it. Every section is the same shape so the eye learns the rhythm once.
- */
+/** `.cap` with one bold clause - the design's way of labelling a live value. */
 @Composable
-private fun Section(title: String, note: String, content: @Composable () -> Unit) {
-    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 18.dp)) {
-        FieldLabel(title)
-        Spacer(Modifier.height(6.dp))
-        Text(note, style = VaniType.bodySmall, color = VaniColors.InkDim)
-        Spacer(Modifier.height(14.dp))
-        content()
+private fun CapLine(lead: String, value: String) {
+    Row {
+        Text(lead, style = VaniType.labelSmall, color = VaniColors.InkFaint)
+        Text(value, style = VaniType.labelSmall, color = VaniColors.Ink, fontWeight = FontWeight.Bold)
     }
-    Rule(color = VaniColors.PanelLit)
 }
 
 /**
- * The wordmark with the mesh's own health under it: the bar is how much of the roster is
- * answering, so the header is a readout rather than decoration.
+ * A fact the app knows about itself, in the `.switch-row` shape but without the control: the label
+ * in the body face, the measured value under it in mono. Side by side, a long value squeezed the
+ * label into three lines and the two collided.
  */
 @Composable
-fun VaniWordmark(health: Float, modifier: Modifier = Modifier) {
-    Column(modifier) {
-        Text(
-            "VANI",
-            style = VaniType.headlineMedium.copy(
-                fontFamily = VaniConsoleFamily, letterSpacing = 3.sp
-            ),
-            color = VaniColors.Ink
-        )
-        Spacer(Modifier.height(3.dp))
-        Row(Modifier.fillMaxWidth().height(2.dp).background(VaniColors.PanelLit)) {
-            Spacer(Modifier.fillMaxWidth(health.coerceIn(0.08f, 1f)).background(VaniColors.Signal))
-        }
+private fun Readout(title: String, value: String) {
+    Column(Modifier.padding(vertical = 4.dp)) {
+        Text(title, style = VaniType.bodyMedium, color = VaniColors.Ink)
+        Text(value, style = VaniType.labelMedium, color = VaniColors.InkDim)
+    }
+}
+
+/** `.lang-opt` for two choices side by side, where a badge would only add noise. */
+@Composable
+private fun VoiceOption(label: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.fillMaxWidth().height(VaniTarget)
+            .background(if (selected) VaniColors.PanelLit else VaniColors.Panel, VaniShapes.small)
+            .border(
+                1.dp, if (selected) VaniColors.Ink else VaniColors.Rule, VaniShapes.small
+            )
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(label, style = VaniType.titleMedium, color = VaniColors.Ink)
     }
 }

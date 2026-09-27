@@ -5,13 +5,14 @@
 #
 # Two things happen here that a plain download cannot do:
 #
-# 1. WEIGHT-ONLY INT8 IN QDQ FORM. The published int8 encoder is 608 MB, and 215 MB of that is
+# 1. WEIGHT-ONLY INT8 IN QDQ FORM. The published int8 encoder is 638 MB, and 225 MB of that is
 #    still fp32 - 53.8M parameters, 99.1% of them Conv weights. Those become per-channel int8
-#    behind a DequantizeLinear, which lands the file at 454 MB. QDQ rather than ConvInteger is
-#    deliberate: ONNX Runtime 1.22 for Android has no ConvInteger kernel, which is exactly why
-#    the Whisper int8 encoder had to be swapped for its fp16 one. The compute stays fp32, so
-#    this buys 154 MB and no speed change. Measured on the app's own 22 reference clips: worst
-#    per-clip regression +0.0 points, one clip improved, every output script identical.
+#    behind a DequantizeLinear, which lands the file at 477 MB. Sizes here are decimal, as `ls`
+#    reports them. QDQ rather than ConvInteger is deliberate: ONNX Runtime 1.22 for Android has
+#    no ConvInteger kernel, which is exactly why the Whisper int8 encoder had to be swapped for
+#    its fp16 one. The compute stays fp32, so this buys 161 MB and no speed change. Measured on
+#    the app's own 22 reference clips: worst per-clip regression +0.0 points, one clip improved,
+#    every output script identical.
 #
 # 2. FRONTEND CONSTANTS. NeMo's fbank lives inside preproc.pt (a pickled torch bundle), so it is
 #    dumped to JSON here rather than re-derived: window (400), fb (128x257) and the scalar
@@ -32,7 +33,7 @@ from onnx import TensorProto, helper, numpy_helper
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "app", "src", "main", "assets", "models", "stt-sravaani")
 # Downloads land under build/, NOT in assets: Gradle bundles every file it finds in the assets
-# tree, so leaving the 608 MB un-quantised encoder next to its 454 MB QDQ child would ship both.
+# tree, so leaving the 638 MB un-quantised encoder next to its 477 MB QDQ child would ship both.
 SRC = os.path.join(HERE, "..", "build", "sravaani")
 os.makedirs(ROOT, exist_ok=True)
 os.makedirs(SRC, exist_ok=True)

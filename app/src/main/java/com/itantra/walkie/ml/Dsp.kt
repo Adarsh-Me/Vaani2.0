@@ -46,8 +46,8 @@ object Fft {
     /**
      * Analysis: windowed frames -> power spectra [frames][nfft/2+1], centred like torch.stft.
      *
-     * [reflect] picks the edge policy, and the two ASR frontends disagree on it: Whisper's
-     * log-mel comes from `pad_mode="reflect"` (torch's default), NeMo's fbank from
+     * [reflect] picks the edge policy, and the two frontends here disagree on it: the TTS mel
+     * comes from a reflecting pad (torch's default), the SraVaani fbank from
      * `pad_mode="constant"`. Feeding a model the other one's boundary is a silent feature
      * mismatch - the first and last frames are the ones that touch it.
      */

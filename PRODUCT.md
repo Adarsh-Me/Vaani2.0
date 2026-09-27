@@ -49,16 +49,50 @@ product, not a feature.
 
 Confirmed working today: end-to-end STT → translation → TTS → speaker playback on 11 languages
 (English plus 10 Indic), message replay of cached audio, a "test voice" self-check that runs the
-same path, and a 686 MB APK.
+same path, and a 970 MB debug APK (clean `assembleDebug`, models included, nothing extracted).
 
 Hard constraints, all measured on device:
-- **Speech recognition exists for Hindi only.** Other languages must be typed, or spoken Hindi
-  translated outward. This must never be implied otherwise in the interface.
+- **One graph hears every language the mic claims.** The microphone is SraVaani-1.0 (ARTPARK +
+  IISc, MIT): a 443.6M-parameter FastConformer-TDT covering 65 Indic languages, with no language
+  token at all - so adding a language to the app cannot disable it. Its fp32 Conv weights were
+  rewritten to per-channel int8 behind `DequantizeLinear` (638 → 477 MB) because ONNX Runtime for
+  Android has no ConvInteger kernel. Measured with the `sttbench` scenario on the emulator against
+  the shipped reference clips: 10 of 11 languages come back in their own script with every word of
+  the reference present (Hindi, Kannada, Malayalam, Marathi byte-identical; Bengali, Gujarati,
+  Punjabi, Tamil, Telugu, English differ only in spacing, punctuation or one matra), in 625-3,025 ms.
+  **Odia is gated off and stays typed** - the model covers it, but there is no Odia clip in the pack
+  to measure against, so it is not claimed. The interface marks which languages are live.
 - **Translation is Indic↔Indic.** English is not a valid translation target; English-pair turns
-  pass text through unchanged and say so.
+  pass text through unchanged and say so. The decoder runs without a KV cache: the exported
+  `decoder_with_past` graph asked for cross-attention caches the encoder never emits, so it could
+  not have run, and 194 MB of it is gone. Cache-free greedy decode measures 287-577 ms per reply.
 - **Synthesis quality is uneven.** Seven languages speak from a borrowed (donor) reference voice
   because their own reference clips fail load-time quality gates.
-- The install must stay under 800 MB; nothing may add large assets casually.
+- **The install is 970 MB, and it holds nothing twice.** The multilingual mic was bought with the
+  user's agreement at 850-900 MB (after deleting the Hindi-only Conformer, 131 MB; the unusable MT
+  with-past export, 194 MB; and Whisper-base). A day later the ask was "under 1 GB total", because
+  the 883 MB APK also extracted the 477 MB encoder into `filesDir` on first run - 1.36 GB per
+  handset. That copy is gone: the encoder asset is stored uncompressed (`noCompress` on the
+  `qdq.onnx` suffix only) and mapped straight out of base.apk, so the APK is 970 MB and the data
+  dir is 8 KB. A handset that ran the older build has its stale extract deleted on next load.
+  What the mapping costs is RAM instead of disk: ONNX Runtime copies roughly 2.1x a model's bytes
+  into private native memory whatever route loads it, so the process sits at ~2.26 GB native after
+  all four engines, and `System.gc()` returns none of it. The remaining size levers each cost
+  something - int8 on the Vocos backbone (~-35 MB, timbre), int8 on the TDT joint decoder
+  (~-18 MB, accuracy), arm64-only split (~-22 MB, drops the emulator build). Nothing may add large
+  assets casually.
+- **Speech starts in 3.4 s for a short reply and 6.0 s for a four-second one; under 3 s costs the
+  solve's convergence.** Measured on the emulator, one demo turn: 10.2 s -> **6.0 s** render after
+  (a) `ORT_THREADS` moved to 4 on a >=6-core device, which `debug fmcost` measured at 508 ms vs
+  447 ms for a 241-frame step, and (b) Turbo cropping the donor prompt to 96 frames, which is what
+  the arithmetic allows: cost = (prompt + generated frames) x steps x ~2.3 ms, and the prompt
+  region rides through every step, so the full 241-frame clip is 3.3 s before one frame of speech
+  exists. Six steps is the floor for a human contour - `debug latbench` at four steps reaches
+  2.2 s but leaves prompt-reconstruction error at 0.85 against 0.70 and dynamics at 3.9 against
+  the donor's 1.7. Full mode keeps the whole clip and its 16 steps. The three-seed A/B is
+  contradictory and the ear decides: at 96 frames `Prosody.spread` is *tighter* (0.51-0.69 against
+  0.43-2.48 at full length) while the host analyser counts more abrupt pitch jumps (44-62 against
+  31-35) and one take at 177 Hz against the donor's 104.
 - Android 12+ will not let an app silently enable Bluetooth or grant radio permissions; any
   "turns on automatically" behaviour is an honest, user-visible consent step, never a claim.
 - **The male cut needs a standing trim.** The vocoder returns a solve brighter and a few Hz higher
@@ -89,6 +123,28 @@ needs more than the current hop-limited flood, and per-thread language of record
 - Language names must appear in their own script (हिन्दी, मराठी, தமிழ்), not only Latin transliteration.
 - Explicit brief constraint: WhatsApp-style conversation reading — sent messages on the right in
   green, received on the left, large legible type — and a floating bottom navigation bar.
+- **The visual system is the handed-off design, implemented as written.** Tokens come from
+  `vani-app.css` (OKLCH converted in `ui/VaniTheme.kt`): near-black ground, one mint accent used at
+  most twice a screen, a single dim-gold tone for pending/unverified, hairline borders, no gradients
+  on surfaces, and every status carried by a word plus a shape. Type is Sora / Manrope / JetBrains
+  Mono, bundled in `res/font` (612 KB), with system Noto resolving the Indic scripts. Screens are
+  Mesh, Talk and Setup from the export's three HTML files.
+- Four deliberate departures from the export, each because the app would otherwise lie or lose
+  something the brief asks for:
+  1. **A fourth nav cell, Demo.** The export has three tabs; the operator asked for the single-handset
+     loopback bench by name, and it is how the chain is tested without a second phone.
+  2. **The "Speech pack" switch is a readout.** The recognition model ships inside the APK, so a
+     toggle would be a control that cannot do anything. The same facts appear, with real numbers.
+  3. **No Rescan button.** This radio sweeps continuously; restarting the sweep would either do
+     nothing visible or drop live GATT links. The sweep age is shown instead.
+  4. **The tone line is a word, not a waveform.** The BLE frame carries one signed percent of
+     animation, not an envelope, so drawing seven bars would be decoration dressed as measurement.
+  5. **The language pickers are gone from Setup**, on the operator's instruction on 2026-09-27: all
+     eleven languages ship loaded, so choosing which you "speak" gated nothing. The consequence is
+     stated plainly here because it is a capability limit, not a cosmetic one - the live mesh pair is
+     whatever the phone was last configured with (out of the box हिन्दी → मराठी) and there is no
+     screen to change it. The bench still lets either side be set per test, and `ui.src`/`ui.tgt`
+     persist across restarts.
 
 ## Evidence on Hand
 

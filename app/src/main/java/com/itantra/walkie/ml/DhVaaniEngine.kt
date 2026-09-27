@@ -44,7 +44,7 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
     /** Prompt mel stats of the last synth (the distribution the FM should preserve). */
     var lastPromptStats = ""
     private val nThreads = threads.coerceIn(1, 8)
-    private val opts = OrtSession.SessionOptions().apply { setIntraOpNumThreads(threads) }
+    private val opts = Sessions.options(threads)
 
     /**
      * Frames of reference clip a solve may carry. The prompt region rides through every
@@ -105,21 +105,31 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
     private fun pack(pcm: FloatArray, text: String): PromptPack {
         var mel = trimSilentFrames(refMel(pcm))
         if (mel.isEmpty()) mel = refMel(pcm)
-        var ids = textToIds(text)
-        val max = promptCap
-        if (mel.size > max && max > 0) {
-            // Region-matched crop: the mel window [start, start+max) pairs with the
-            // proportional token window, never with the head tokens. Centered, not
-            // densest: a max-energy window cuts mid-phoneme at both ends and the
-            // solve inherits those garbage edges (Marathi pitch jumps 33 -> 70).
-            val start = (mel.size - max) / 2
-            val tokStart = start * ids.size / mel.size
-            val tokCount = maxOf(1, max * ids.size / mel.size)
-            ids = ids.drop(tokStart).take(tokCount)
-            if (ids.isEmpty()) ids = textToIds(text).take(tokCount)
-            mel = Array(max) { mel[start + it] }
-        }
+        val ids = textToIds(text)
         return PromptPack(mel, text, ids, pauseFraction(mel))
+    }
+
+    /**
+     * The prompt window a solve actually conditions on, cut out of the packed ref on demand.
+     *
+     * This used to happen inside [pack], which meant the whole reference pack had to be re-melled
+     * to try another length. Now the cache holds every clip whole - which is also what the load-time
+     * trust gates are calibrated against - and the length is one integer the caller can change
+     * between two sentences.
+     */
+    private fun crop(pack: PromptPack, max: Int): PromptPack {
+        if (max <= 0 || pack.mel.size <= max) return pack
+        val ids = pack.ids
+        // Region-matched crop: the mel window [start, start+max) pairs with the proportional
+        // token window, never with the head tokens. Centered, not densest: a max-energy window
+        // cuts mid-phoneme at both ends and the solve inherits those garbage edges (Marathi pitch
+        // jumps 33 -> 70).
+        val start = (pack.mel.size - max) / 2
+        val tokStart = start * ids.size / pack.mel.size
+        val tokCount = maxOf(1, max * ids.size / pack.mel.size)
+        val kept = ids.drop(tokStart).take(tokCount).let { if (it.isEmpty()) ids.take(tokCount) else it }
+        val mel = Array(max) { pack.mel[start + it] }
+        return PromptPack(mel, pack.text, kept, pauseFraction(mel))
     }
 
     /**
@@ -442,8 +452,9 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
         try {
             val pl = promptOverride?.first ?: lang
             val pv = promptOverride?.second ?: voice
-            val ref = resolveRef(pl, pv)
+            val rawRef = resolveRef(pl, pv)
                 ?: run { lastError = "no ref"; return FloatArray(0) }
+            val ref = crop(rawRef, promptCap)
             lastPromptStats = stats(ref.mel)
             val refIds = ref.ids
             val genIds = textToIds(text)
@@ -641,7 +652,7 @@ class DhVaaniEngine(private val env: OrtEnvironment, private val res: Bundled, t
         val rnd = java.util.Random(5)
         for (fr in frameCounts) for (tf in threadCounts) {
             val s = try {
-                env.createSession(fmBytes.duplicate(), OrtSession.SessionOptions().apply { setIntraOpNumThreads(tf) })
+                env.createSession(fmBytes.duplicate(), Sessions.options(tf))
             } catch (e: Exception) { sb.append("f=$fr t=$tf open-err; "); continue }
             val shape = longArrayOf(1, fr.toLong(), 100)
             try {

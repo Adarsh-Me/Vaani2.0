@@ -30,6 +30,13 @@ android {
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.4.8" }
     packagingOptions { jniLibs { useLegacyPackaging = false } }
+    androidResources {
+        // One suffix, not a glob: aapt2 matches noCompress against the end of the asset path, so
+        // this stores exactly the SraVaani encoder and lets Bundled.mapped() map it out of the
+        // APK instead of extracting a 477 MB second copy. Storing *every* .onnx would add 224 MB
+        // to the download to save nothing, because the other six fit buffer() as they are.
+        noCompress += "qdq.onnx"
+    }
 }
 
 dependencies {
