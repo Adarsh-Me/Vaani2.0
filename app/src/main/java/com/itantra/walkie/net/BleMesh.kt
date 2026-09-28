@@ -55,6 +55,7 @@ class BleMesh(
     override var lastSweepMs by mutableStateOf(0L)
     override var nodesReached by mutableStateOf(0)
     override var listener: ((String, String, String, com.itantra.walkie.ml.Tone, Int) -> Unit)? = null
+    override var onRoster: ((Int) -> Unit)? = null
 
     private val known = LinkedHashMap<String, Peer>()
     override fun lastKnown(peerId: String): Peer? = known[peerId]
@@ -224,7 +225,22 @@ class BleMesh(
         val old = known[addr]
         known[addr] = (old ?: Peer(addr, "", Lang.HI, rssi, now))
             .copy(lastHeardMs = now, rssi = if (rssi == -1) old?.rssi ?: -1 else rssi)
+        if (rssi != -1) {
+            // Eight samples is ~16 s of scanning at the default duty cycle: long enough for a
+            // slope, short enough that a phone which walked away stops looking like it stayed.
+            val h = rssiHist.getOrPut(addr) { ArrayDeque() }
+            h.addLast(rssi)
+            while (h.size > 8) h.removeFirst()
+        }
         publish()
+    }
+
+    /** The rolling signal history the proximity band and the trend arrow come from. */
+    private val rssiHist = HashMap<String, ArrayDeque<Int>>()
+
+    override fun proximity(addr: String): Pair<Int, Trend> {
+        val r = known[addr]?.rssi ?: return 0 to Trend.UNKNOWN
+        return Proximity.band(r) to Proximity.trend(rssiHist[addr]?.toList() ?: emptyList())
     }
 
     // ------------------------------------------------------------------ sending
@@ -235,7 +251,9 @@ class BleMesh(
     }
 
     @SuppressLint("MissingPermission")
-    override fun send(addr: Address, text: String, tone: com.itantra.walkie.ml.Tone): Int {
+    override fun send(
+        addr: Address, text: String, tone: com.itantra.walkie.ml.Tone, hops: Int
+    ): Int {
         if (text.isEmpty()) return 0
         // The words leave as a coded frame, not as UTF-8: an order-1 model over the Brahmic
         // alphabet roughly halves a sentence (Hindi 90 bytes -> 27 on the shipped transcripts),
@@ -250,6 +268,9 @@ class BleMesh(
         val max = live.minOf { it.chunk }
         val count = ((bytes.size + max - 1) / max).coerceAtMost(255)
         if (bytes.size > count * max) return 0
+        // 0 means "the usual budget"; a distress beacon passes more, because the cost of a relay
+        // dying out before it reaches a boat is not measured in bandwidth.
+        val hopBudget = if (hops <= 0) MAX_HOPS else hops.coerceAtMost(7)
         val id = nextId
         nextId = (nextId + 1) % 65536
         val direct = addr is Address.One
@@ -260,7 +281,7 @@ class BleMesh(
             val n = max.coerceAtMost(bytes.size - off)
             val pdu = ByteArrayOutputStream()
             DataOutputStream(pdu).use { o ->
-                o.writeByte(TYPE_DATA or (if (direct) FLAG_DIRECT else 0) or (MAX_HOPS shl HOPS_SHIFT))
+                o.writeByte(TYPE_DATA or (if (direct) FLAG_DIRECT else 0) or (hopBudget shl HOPS_SHIFT))
                 o.writeShort(id)
                 o.writeByte(i)
                 o.writeByte(count)
@@ -272,6 +293,23 @@ class BleMesh(
             for (l in live) { l.queue.add(pduBytes); pump(l) }
         }
         return bytes.size
+    }
+
+    /**
+     * A position goes to every live link in one 12-byte frame, unfragmented and unrelayed. It is
+     * not coded and not checksummed: it is 11 bytes of integers that either parse or do not, and a
+     * peer that stops hearing them keeps its stale fix for [LISTEN_MS] and then drops off the
+     * board like any other contact.
+     */
+    @SuppressLint("MissingPermission")
+    override fun reportPosition(encoded: ByteArray) {
+        if (encoded.size != POS_BYTES) return
+        for (l in links.values.filter { it.ready }) {
+            val pdu = ByteArray(1 + encoded.size)
+            pdu[0] = TYPE_POS.toByte()
+            encoded.copyInto(pdu, 1)
+            l.queue.add(pdu); pump(l)
+        }
     }
 
     private fun pump(l: Link) {
@@ -307,7 +345,21 @@ class BleMesh(
         when (raw[0].toInt() and 0x0F) {
             TYPE_HELLO -> onHello(addr, raw)
             TYPE_DATA -> onData(addr, raw)
+            TYPE_POS -> onPos(addr, raw)
         }
+    }
+
+    /**
+     * Where that handset says it is. The sender is the link, as always - a position frame that
+     * carried its own address would be a frame anyone could claim to be.
+     */
+    private fun onPos(addr: String, raw: ByteArray) {
+        if (raw.size < 1 + POS_BYTES) return
+        val f = Fix.decode(raw.copyOfRange(1, raw.size)) ?: return
+        heard(addr)
+        val old = known[addr] ?: return
+        known[addr] = old.copy(pos = f)
+        publish()
     }
 
     private fun onHello(addr: String, raw: ByteArray) {
@@ -485,7 +537,13 @@ class BleMesh(
         val now = System.currentTimeMillis()
         val live = known.values.filter { now - it.lastHeardMs < LISTEN_MS && it.name.isNotBlank() }
         peers = live.sortedWith(compareByDescending<Peer> { it.bars }.thenBy { it.name })
-        nodesReached = live.size
+        val n = live.size
+        // Only on a real change: this runs on every scan hit, and the shade notification it feeds
+        // would otherwise be rebuilt several times a second.
+        if (n != nodesReached) {
+            nodesReached = n
+            onRoster?.invoke(n)
+        }
     }
 
     companion object {
@@ -498,6 +556,9 @@ class BleMesh(
 
         private const val TYPE_HELLO = 1
         private const val TYPE_DATA = 2
+        /** A handset's own GPS fix. Direct only - never relayed, never argued about. */
+        private const val TYPE_POS = 3
+        private const val POS_BYTES = 11
         private const val FLAG_DIRECT = 0x10
         private const val HOPS_SHIFT = 5
         private const val MAX_HOPS = 3

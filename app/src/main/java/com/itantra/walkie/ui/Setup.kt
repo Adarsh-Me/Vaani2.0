@@ -140,6 +140,24 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                                 else "Whole donor prompt · ${AppConfig.TTS_NFE_FULL} flow steps · the fullest voice",
                                 vm.ui.turbo
                             ) { vm.setTurbo(it) }
+                            Spacer(Modifier.height(12.dp))
+                            SwitchRow(
+                                "Keep incoming voice loud",
+                                if (vm.ui.loudInbound)
+                                    "Raises the ringer so a reply carries outdoors · turns itself " +
+                                        "off the moment you move the volume"
+                                else "Your own volume setting is left alone, at any level",
+                                vm.ui.loudInbound
+                            ) { vm.setLoudInbound(it) }
+                            Spacer(Modifier.height(12.dp))
+                            SwitchRow(
+                                "Share my position",
+                                if (vm.ui.sharePos)
+                                    "Your GPS fix goes to phones in Bluetooth range · no network, " +
+                                        "no history, no server"
+                                else "Other phones see your name but not where you are",
+                                vm.ui.sharePos
+                            ) { vm.setSharePosition(it) }
                             Spacer(Modifier.height(14.dp))
                             PrimaryButton(
                                 label = "Test voice on this phone",

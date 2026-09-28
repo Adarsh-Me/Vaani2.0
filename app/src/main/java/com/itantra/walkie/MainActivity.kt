@@ -47,10 +47,15 @@ class MainActivity : ComponentActivity() {
     private val radioPerm = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
+        val all = granted.values.all { it }
         vm.setStatus(
-            if (granted.values.all { it }) "radio allowed · listening for phones"
+            if (all) "radio allowed · listening for phones"
             else "radio permission denied · no phone can be seen"
         )
+        if (all) {
+            ensureNotifications()
+            ensureAwake()
+        }
         vm.bringUpMesh()
     }
 
@@ -60,6 +65,55 @@ class MainActivity : ComponentActivity() {
             else "bluetooth left off · no phone can be reached"
         )
         bringUpRadio()
+    }
+
+    /**
+     * Android 13+ will not show the listening notification without this, and the notification is
+     * what makes a permanent radio honest. Refusing it costs a line in the shade, not the mesh.
+     */
+    private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    private fun ensureNotifications() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) runCatching { notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS) }
+    }
+
+    /**
+     * Asked for by default, because coordinates are what a rescue team can act on and this app has
+     * no network to fall back on. Denied, the product still works - it just cannot say where, and
+     * the Mesh pane says so instead of showing a dot that is not a position.
+     */
+    private val locPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) vm.setStatus("location denied · phones still hear each other, no position")
+        else vm.bringUpMesh()
+    }
+
+    private fun ensureLocation() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) runCatching { locPerm.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
+    }
+
+    /**
+     * Doze stops a background scan on most skins, which silently turns a walkie into an app that
+     * only works while it is open. Asked once, and once only: a refusal is a legitimate answer, and
+     * the console says what it costs instead of nagging.
+     */
+    private fun ensureAwake() {
+        val p = getSharedPreferences("vani", android.content.Context.MODE_PRIVATE)
+        if (p.getBoolean("awake-asked", false)) return
+        val pm = getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+            ?: return
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        p.edit().putBoolean("awake-asked", true).apply()
+        runCatching {
+            startActivity(
+                Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(android.net.Uri.parse("package:$packageName"))
+            )
+        }
     }
 
     private fun ensureMic(): Boolean {
@@ -88,7 +142,12 @@ class MainActivity : ComponentActivity() {
 
     /** Permissions first, then the radio itself: asking in the other order just throws. */
     private fun bringUpRadio() {
-        if (ensureRadio()) vm.bringUpMesh()
+        if (ensureRadio()) {
+            ensureNotifications()
+            ensureAwake()
+            ensureLocation()
+            vm.bringUpMesh()
+        }
     }
 
     /**
@@ -111,6 +170,12 @@ class MainActivity : ComponentActivity() {
             isAppearanceLightNavigationBars = false
         }
         vm.initModels(intent?.getStringExtra("debug"))
+        // Loud by default so an incoming line carries across rain and generators - and the
+        // observer is what makes "the user can turn it down" true rather than a promise.
+        com.itantra.walkie.audio.Loudness.ensure(this, vm.ui.loudInbound)
+        com.itantra.walkie.audio.Loudness.watchForUser(this) {
+            vm.setStatus("volume set by you · VANI will not raise it again")
+        }
         setContent {
             VaniTheme {
                 val setup = !vm.ui.setupDone

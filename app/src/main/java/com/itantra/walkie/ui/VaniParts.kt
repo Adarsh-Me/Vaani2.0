@@ -532,6 +532,7 @@ fun PeerRow(
     rssi: Int,
     selected: Boolean,
     modifier: Modifier = Modifier,
+    trend: String = "",
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(VaniRadiusBubble)
@@ -559,6 +560,14 @@ fun PeerRow(
                 color = if (selected) VaniColors.Ink else VaniColors.InkDim
             )
             Text("dBm · ${signalOf(rssi).word}", style = VaniType.labelSmall, color = VaniColors.InkFaint)
+            // The direction of travel, not a distance: this is the line a person walking with the
+            // phone in their hand actually acts on, and it is the one claim RSSI can support.
+            if (trend.isNotBlank()) {
+                Text(
+                    trend, style = VaniType.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = VaniColors.InkDim, modifier = Modifier.padding(top = 2.dp)
+                )
+            }
         }
     }
 }

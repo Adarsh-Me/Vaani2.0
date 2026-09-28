@@ -14,7 +14,9 @@ import com.itantra.walkie.ml.DhVaaniEngine
 import com.itantra.walkie.ml.ModelInstaller
 import com.itantra.walkie.ml.TranslatorEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -122,6 +124,18 @@ data class UiState(
     /** Frames this phone has handed the radio since launch, and the bytes they cost. */
     val wireFrames: Int = 0,
     val wireBytes: Int = 0,
+    /** A distress beacon is repeating right now, and when it stops on its own. */
+    val sosLive: Boolean = false,
+    val sosUntilMs: Long = 0L,
+    /** Raise the media stream so an incoming line is audible outdoors. Off means off. */
+    val loudInbound: Boolean = true,
+    /**
+     * Put this handset's GPS fix on the mesh. On by default: the whole premise of the product is
+     * that a trapped person's most useful act is telling someone where they are, and coordinates
+     * are the one thing a phone can supply with no network. What it shares is a position, not a
+     * history - only phones in Bluetooth range ever receive it.
+     */
+    val sharePos: Boolean = true,
 )
 
 class WalkieViewModel(app: Application) : AndroidViewModel(app) {
@@ -169,6 +183,7 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
             m.listener = { from, channel, text, tone, onAir ->
                 onInbound(from, channel, text, tone, onAir)
             }
+            m.onRoster = { n -> com.itantra.walkie.net.MeshService.report(getApplication(), n) }
         }
     }
 
@@ -281,8 +296,58 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         updateUi(ui.copy(threads = ui.threads + (channelId to cur.map { if (it.id == id) patch(it) else it })))
     }
 
-    /** Ask the radio to come up and start a sweep. Safe to call on every return to the foreground. */
-    fun bringUpMesh() = mesh.start()
+    /**
+     * Ask the radio to come up and start a sweep. Safe to call on every return to the foreground.
+     * When it does come up, the foreground service goes with it: the mesh has to keep hearing with
+     * the phone in a pocket, and the notification is the platform's price for that, not a banner.
+     */
+    fun bringUpMesh() {
+        mesh.start()
+        if (mesh.radio == com.itantra.walkie.net.RadioState.Live ||
+            mesh.radio == com.itantra.walkie.net.RadioState.Scanning
+        ) com.itantra.walkie.net.MeshService.report(getApplication(), mesh.nodesReached)
+        startPosition()
+    }
+
+    /** The handset's own GPS reader. Runs only while position sharing is on. */
+    val fixes by lazy { com.itantra.walkie.net.FixSource(getApplication()) }
+    private var posJob: Job? = null
+
+    fun setSharePosition(on: Boolean) {
+        updateUi(ui.copy(sharePos = on))
+        with(prefs.edit()) { putBoolean("share_pos", on) }.apply()
+        if (on) startPosition()
+        else {
+            posJob?.cancel(); posJob = null
+            fixes.stop()
+            mesh.reportPosition(ByteArray(0))
+        }
+    }
+
+    /**
+     * Push a fix out when it is new, when it has aged past a minute, or when it has moved more
+     * than 40 m. Finer than that is a phone's own jitter, and a mesh that carries a stream of
+     * identical coordinates is a mesh with less air for the messages that matter.
+     */
+    private fun startPosition() {
+        if (!ui.sharePos) return
+        fixes.start()
+        if (posJob != null) return
+        posJob = viewModelScope.launch(Dispatchers.Default) {
+            var sent: com.itantra.walkie.net.Fix? = null
+            var sentAt = 0L
+            while (isActive) {
+                val f = fixes.fix
+                val now = System.currentTimeMillis()
+                val stale = sent == null || now - sentAt > 60_000L
+                if (f != null && (stale || sent!!.distanceM(f) > 40.0)) {
+                    mesh.reportPosition(f.encode(f.ageS().toInt()))
+                    sent = f; sentAt = now
+                }
+                delay(5_000)
+            }
+        }
+    }
 
     fun selectChannel(peerId: String) { updateUi(ui.copy(active = peerId)) }
 
@@ -341,7 +406,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         val tgt = runCatching { Lang.valueOf(prefs.getString("tgt", "MR") ?: "MR") }.getOrDefault(Lang.MR)
         updateUi(ui.copy(
             name = prefs.getString("name", "This phone") ?: "This phone",
-            spoken = spoken, setupDone = true, src = src, tgt = tgt
+            spoken = spoken, setupDone = true, src = src, tgt = tgt,
+            loudInbound = prefs.getBoolean("loud", true),
+            sharePos = prefs.getBoolean("share_pos", true)
         ))
     }
 
@@ -387,6 +454,82 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
             wireBytes = ui.wireBytes + onAir,
             status = if (sent) "on air · $onAir B" else "not sent · no link up"
         ))
+    }
+
+    /**
+     * One tap sends a whole rescue sentence. This exists for the case where neither the keyboard
+     * nor the microphone is usable - water up to the waist, a hand that will not stay still, noise
+     * no recogniser parses - and for the person who cannot type in their own language. The words
+     * travel exactly as a spoken line does, so the receiving phone translates and speaks them in
+     * its own language; nothing about the wire changes.
+     */
+    fun sendPreset(p: com.itantra.walkie.ml.Preset) = sendMessage(p.hindi)
+
+    private var sosJob: Job? = null
+    private var sosMsgId = 0L
+
+    /**
+     * The distress beacon: send the help line now, then again on a fixed interval until it is
+     * cancelled or the window closes.
+     *
+     * It repeats because one frame is lost the instant nobody awake is in range to relay it, and a
+     * trapped person cannot tell the difference between "no one heard" and "no one is coming". It
+     * stops by itself because a phone that keeps calling after its people were lifted off that
+     * roof keeps boats away from the roof where one is still needed.
+     *
+     * Every beat reports what this phone actually did, not what it hopes: no verified link still
+     * says so, on the same line, each time.
+     */
+    fun startSos() {
+        if (sosJob != null) return
+        val p = com.itantra.walkie.ml.Preset.HELP
+        val until = System.currentTimeMillis() + com.itantra.walkie.ml.Preset.SOS_LIMIT_MS
+        sosMsgId = ++msgSeq
+        val first = mesh.send(
+            com.itantra.walkie.net.Address.of(ui.active), p.hindi,
+            hops = com.itantra.walkie.ml.Preset.SOS_HOPS
+        )
+        appendToThread(
+            ui.active,
+            Msg(
+                id = sosMsgId, outgoing = true, text = p.hindi, who = "SOS · broadcast",
+                path = "repeats every 12s · relayed further than a normal line",
+                status = sosBeat(1, first), statusOk = false,
+            )
+        )
+        updateUi(ui.copy(sosLive = true, sosUntilMs = until, status = "SOS broadcasting"))
+        sosJob = viewModelScope.launch {
+            var beats = 1
+            while (isActive) {
+                val left = until - System.currentTimeMillis()
+                if (left <= 0) break
+                delay(com.itantra.walkie.ml.Preset.SOS_REPEAT_MS.coerceAtMost(left))
+                val on = mesh.send(
+                    com.itantra.walkie.net.Address.of(ui.active), p.hindi,
+                    hops = com.itantra.walkie.ml.Preset.SOS_HOPS
+                )
+                beats++
+                val b = beats
+                editInThread(ui.active, sosMsgId) { it.copy(status = sosBeat(b, on)) }
+            }
+            stopSos("SOS window ended · send it again if you are still waiting")
+        }
+    }
+
+    private fun sosBeat(n: Int, onAir: Int) = if (onAir > 0) {
+        val nodes = mesh.nodesReached
+        "SOS beat $n · on air $onAir B · $nodes in range"
+    } else "SOS beat $n · not sent — no verified link"
+
+    /** Stops the loop and says why on the line, so nobody reads silence as rescue. */
+    fun cancelSos() = stopSos("SOS cancelled on this phone")
+
+    private fun stopSos(reason: String) {
+        sosJob?.cancel()
+        sosJob = null
+        if (!ui.sosLive) return
+        editInThread(ui.active, sosMsgId) { it.copy(status = reason) }
+        updateUi(ui.copy(sosLive = false, sosUntilMs = 0L, status = reason))
     }
 
     /**
@@ -452,6 +595,43 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
     fun threadFor(peerId: String): List<Msg> = ui.threads[peerId] ?: emptyList()
 
     // ------------------------------------------------------------------ loopback bench
+
+    /**
+     * The measurement that has to exist before any distance number is allowed on this screen: two
+     * handsets, walking apart, with the signal strength logged against the **ground distance
+     * between two real GPS fixes** rather than against a guess.
+     *
+     * Run it outdoors, one phone in hand and one in a pocket, walking 0 - 100 m in ~10 m steps and
+     * holding each for 20 s so both phones get eight samples per step. What comes out is the
+     * scatter that decides whether a band ("near", "far") is honest, where a metre figure never
+     * can be - and, if it turns out tight enough to matter, the path-loss fit to calibrate one.
+     */
+    fun calibrateWalk() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val until = System.currentTimeMillis() + 5L * 60_000L
+            android.util.Log.e(
+                "CAL", "start me_fix=${fixes.fix != null} acc=${fixes.fix?.accM ?: -1} " +
+                    "err=${fixes.problem}"
+            )
+            while (isActive && System.currentTimeMillis() < until) {
+                val me = fixes.fix
+                val ps = mesh.peers
+                if (ps.isEmpty()) android.util.Log.e("CAL", "no peer in range")
+                for (p in ps) {
+                    val d = if (me != null && p.pos != null) me.distanceM(p.pos!!) else -1.0
+                    val (band, trend) = mesh.proximity(p.id)
+                    android.util.Log.e(
+                        "CAL", "t=${System.currentTimeMillis()} id=${p.id.take(8)} rssi=${p.rssi} " +
+                            "band=$band trend=${trend.name} ground_m=${"%.1f".format(d)} " +
+                            "my_acc=${me?.accM ?: -1} peer_acc=${p.pos?.accM ?: -1} " +
+                            "fix_age_s=${me?.ageS() ?: -1}"
+                    )
+                }
+                delay(2_000)
+            }
+            android.util.Log.e("CAL", "window closed")
+        }
+    }
 
     /**
      * One handset playing both ends. Phone 1's words are put on phone 2's thread exactly as an
@@ -810,6 +990,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 // Which language was spoken, told by the transcript rather than by the user:
                 // script, lexicon and translator confidence scored against the clip filenames.
                 "langid" -> langIdBench()
+                // Two handsets walking apart, logging RSSI against the GPS ground distance: the
+                // only measurement that can say what a proximity band is really worth.
+                "calibrate" -> calibrateWalk()
                 // Can the Devanagari-only MT dictionary read another script once it is re-based?
                 "mtrebase" -> mtRebase()
                 "ab" -> promptAB()
@@ -1849,6 +2032,9 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
      * per-sentence phrasing the whole feature had destroyed.
      */
     private fun speakReply(text: String, lg: Lang, v: Voice, tone: com.itantra.walkie.ml.Tone = com.itantra.walkie.ml.Tone.NEUTRAL): Spoken {
+        // Before the audio exists, not after: a line solved at half volume and then played quietly
+        // is a line the person in the rain never hears. Yields the moment they move the volume.
+        com.itantra.walkie.audio.Loudness.ensure(getApplication(), ui.loudInbound)
         val t0 = System.currentTimeMillis()
         val solved = tts?.synthesize(text, lg, v, nfe(), candidates = candidates()) ?: FloatArray(0)
         // Two trims, in order, both skippable. The male one is standing: the solve comes out of
@@ -1932,6 +2118,13 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         tts?.promptCap = if (turbo) AppConfig.TTS_PROMPT_MAX_FRAMES_TURBO else AppConfig.TTS_PROMPT_MAX_FRAMES
     }
     fun setMatchTone(on: Boolean) { updateUi(ui.copy(matchTone = on)) }
+
+    /** Loud-by-default, and switched off stays off; the preference is the user's, not ours. */
+    fun setLoudInbound(on: Boolean) {
+        updateUi(ui.copy(loudInbound = on))
+        with(prefs.edit()) { putBoolean("loud", on) }.apply()
+        if (on) com.itantra.walkie.audio.Loudness.ensure(getApplication(), true)
+    }
     fun setSoftMale(on: Boolean) { updateUi(ui.copy(softMale = on)) }
     fun setStatus(s: String) { updateUi(ui.copy(status = s)) }
 

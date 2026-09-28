@@ -11,11 +11,24 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation"
         tools:targetApi="s" />
-    <!-- Below 12 the platform folds BLE scanning into location, so it has to be asked for. -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <!-- Below 12 the platform folds BLE scanning into location, so it has to be asked for. From 12
+         on it is asked for in its own right: a trapped person's coordinates are the single most
+         useful thing their phone can send, and GPS needs no network to produce them. Foreground
+         use only - no background location, and no cached fix presented as a current one. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The radio is the product, and the platform suspends it with the app. A walkie that stops
+         hearing when the screen goes off is not a walkie, so the mesh runs behind a foreground
+         service and says so in the shade the whole time it is up. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Doze kills a background scan on most OEM skins. Asked once, refused without consequence:
+         the app stays fully usable, it just has to be open to hear anything. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application
         android:label="VANI"
         android:theme="@android:style/Theme.Material.NoActionBar"
@@ -30,5 +43,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".net.MeshService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

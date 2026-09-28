@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -249,13 +251,22 @@ private fun PeerSection(vm: WalkieViewModel, reached: Int, now: Long) {
     peers.forEachIndexed { i, p ->
         val named = p.name.isNotBlank()
         val voice = vm.hasVoice(p.lang)
+        // Ground distance between two GPS fixes. This is the one separation the console is
+        // allowed to print as a number: it comes from two positions, not from signal strength,
+        // and it only appears when both handsets actually have a fix.
+        val gap = listOfNotNull(vm.fixes.fix, p.pos).takeIf { it.size == 2 }?.let {
+            val d = it[0].distanceM(it[1])
+            if (d < 950) "${d.roundToInt()} m from you" else "${"%.1f".format(d / 1000)} km from you"
+        }
         PeerRow(
             initials = initials(if (named) p.name else p.id),
             name = if (named) p.name else p.id,
             meta = (if (named) "${p.lang.native} · ${p.lang.label}" else "found over Bluetooth") +
                 " — " + (if (named) "last heard ${since(p.lastHeardMs)} ago" else "not yet introduced") +
+                (gap?.let { " · $it" } ?: "") +
                 if (voice) "" else " · typed only",
             rssi = p.rssi,
+            trend = com.itantra.walkie.net.Proximity.arrow(vm.mesh.proximity(p.id).second),
             selected = vm.ui.active == p.id,
             modifier = Modifier.padding(top = if (i == 0) 8.dp else 0.dp),
             onClick = { vm.selectChannel(p.id); vm.selectPane(Pane.Talk) },
@@ -321,6 +332,21 @@ private fun YouCard(vm: WalkieViewModel) {
         Text(
             "Others see this name in their scan. Set it once in Setup.",
             style = VaniType.labelSmall, color = VaniColors.InkFaint
+        )
+        Spacer(Modifier.height(6.dp))
+        // Position, stated as a fact about the radio rather than a dot on a map nobody can read
+        // in the rain: what is going out, how old it is, and how sure the phone is.
+        val f = vm.fixes.fix
+        val sharing = vm.ui.sharePos
+        Text(
+            when {
+                !sharing -> "Position not shared · turn it on in Setup"
+                f == null -> "Sharing position, but no GPS fix yet · " +
+                    (vm.fixes.problem.ifBlank { "the receiver is still searching" })
+                else -> "Position shared · ±${f.accM} m · fix ${f.ageS()}s old"
+            },
+            style = VaniLabel.tone,
+            color = if (sharing && f == null) VaniColors.Alert else VaniColors.InkDim
         )
     }
 }
@@ -660,6 +686,22 @@ private fun PttZone(
     val shape = RoundedCornerShape(VaniRadiusBubble)
 
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        // The rescue strip sits above the transmitter on purpose: a person who can hold a phone
+        // can also tap one of these, and neither the keyboard nor the recogniser is trusted to
+        // work in water, in noise, or with a shaking hand. The words travel as any sentence does,
+        // so the far phone answers them in its own language.
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SosButton(vm)
+            com.itantra.walkie.ml.Preset.values().forEach { p ->
+                if (p == com.itantra.walkie.ml.Preset.HELP) return@forEach
+                GhostButton(p.label, minHeight = 34.dp, onClick = { vm.sendPreset(p) })
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         Pipeline(
             visible = live || busy,
             stages = when {
@@ -765,6 +807,34 @@ private fun PttZone(
                 modifier = Modifier.padding(start = 4.dp)
             )
         }
+    }
+}
+
+/**
+ * The distress beacon, in the design's warn tone rather than the signal green: it is the one
+ * control on this screen that is allowed to look urgent, and it always carries its own word, so
+ * the state never rides on colour alone. Live, it counts down the window it will stop by itself
+ * at - a beacon nobody can turn off keeps boats away from the roof that actually needs them.
+ */
+@Composable
+private fun SosButton(vm: WalkieViewModel) {
+    val live = vm.ui.sosLive
+    val now = if (live) Ticker(5000L) else 0L
+    val mins = if (live) {
+        ((vm.ui.sosUntilMs - now) / 60_000L).coerceAtLeast(0L) + 1L
+    } else 0L
+    val shape = RoundedCornerShape(VaniRadiusPill)
+    Box(
+        Modifier.background(if (live) VaniColors.Alert else Color.Transparent, shape)
+            .border(1.dp, VaniColors.Alert.copy(alpha = if (live) 1f else 0.65f), shape)
+            .clickable(role = Role.Button) { if (live) vm.cancelSos() else vm.startSos() }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Text(
+            if (live) "SOS LIVE · ${mins}m LEFT · STOP" else "SOS",
+            style = VaniLabel.stage.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.9.sp),
+            color = if (live) VaniColors.Ground else VaniColors.Alert, maxLines = 1
+        )
     }
 }
 

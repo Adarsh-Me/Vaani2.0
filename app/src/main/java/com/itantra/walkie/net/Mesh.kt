@@ -29,6 +29,8 @@ data class Peer(
     val lang: Lang,
     val rssi: Int,
     val lastHeardMs: Long,
+    /** Where it said it was, from its own GPS. Null until a position frame arrives. */
+    val pos: Fix? = null,
 ) {
     /** 0..4 bars. Real hardware reports roughly -50 dBm next hand to -95 dBm at range. */
     val bars: Int get() = when {
@@ -58,17 +60,33 @@ interface MeshTransport {
     /** Whether a transmission to this address has a live link to travel on right now. */
     fun reachable(addr: Address): Boolean
 
+    /**
+     * How near a peer is, as a band and a direction of travel - never metres, which is the one
+     * thing RSSI cannot support. Default implementation says "unknown" so a transport without
+     * signal history cannot accidentally claim a reading it does not have.
+     */
+    fun proximity(addr: String): Pair<Int, Trend> = 0 to Trend.UNKNOWN
+
     fun start()
     fun stop()
 
     /**
      * @param tone how the sender's voice sounded while the words were said. A neutral tone adds
      * nothing to the frame, so an ordinary transmission is byte-for-byte what it always was.
+     * @param hops how far this message may be relayed. Left at the default for ordinary traffic;
+     * a distress beacon is the one case where spending more of the shared air is worth it.
      * @return the number of bytes the text became on air - body plus tone framing, before
      * fragmentation - or 0 when the frame could not be handed to the radio at all. The console
      * prints this, so it is the count of bytes that actually left, not the length of the text.
      */
-    fun send(addr: Address, text: String, tone: Tone = Tone.NEUTRAL): Int
+    fun send(addr: Address, text: String, tone: Tone = Tone.NEUTRAL, hops: Int = 0): Int
+
+    /**
+     * Put this handset's own position on every live link. Never relayed: a position is a
+     * first-person statement, and a forwarded one is somebody else's guess about where a stranger
+     * stands. Empty bytes means sharing is off, and the peer's stale fix is dropped.
+     */
+    fun reportPosition(encoded: ByteArray)
 
     /**
      * Set by the app: invoked for inbound traffic with the sending node's id, the channel the
@@ -78,5 +96,12 @@ interface MeshTransport {
      */
     var listener:
         ((fromPeerId: String, channelId: String, text: String, tone: Tone, onAirBytes: Int) -> Unit)?
+
+    /**
+     * Fired when the count of handsets in range changes, and only then. The foreground service
+     * restates it in the shade, so "is it still listening?" can be answered without unlocking the
+     * phone - which is the only way a radio carried in a pocket stays trustworthy.
+     */
+    var onRoster: ((Int) -> Unit)?
 }
 

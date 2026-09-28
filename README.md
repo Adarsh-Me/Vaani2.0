@@ -80,10 +80,13 @@ product.
 
 ```
 app/src/main/java/com/itantra/walkie/
-  ml/       the three engines, the reference-voice pack, prosody, DSP, wire codec
-  audio/    microphone capture and playback
-  net/      BLE mesh: advertising, scanning, GATT links, fragmentation, relaying
+  ml/       the three engines, the reference-voice pack, prosody, DSP, wire codec,
+            language identification, rescue phrase presets
+  audio/    microphone capture, playback, and the loud-by-default policy
+  net/      BLE mesh: advertising, scanning, GATT links, fragmentation, relaying,
+            the foreground service that keeps them alive, position, proximity
   ui/       Mesh / Talk / Setup / Demo - Compose, one theme from the handed-off design system
+  perf/     this process's own CPU and resident memory, read from /proc/self
   WalkieViewModel.kt   the one place a turn is assembled
 scripts/    host-side measurement: pitch, spectrum, WER, reference-voice audit
 ```
@@ -110,6 +113,8 @@ adb logcat -s BENCH USER TONE PROSODY REFS LOAD STT MTREBASE
 | `sttbench` | mic coverage per language, and the reference clip each one is actually recognised into |
 | `mtrebase` | whether the Devanagari-only MT dictionary can read a re-based script, per language |
 | `wire` | whether the shipped wire tables load on the handset, and every clip frames and reads back exactly |
+| `langid` | which language was spoken, told by the transcript: script, lexicon and translator confidence scored against the clip filenames |
+| `calibrate` | two handsets walking apart, logging RSSI against the GPS ground distance - the only measurement that can justify a proximity band |
 | `demo` | one turn around the single-handset loopback bench |
 
 `wire` is the codec's own proof. It reads `assets/mesh/charmodel.bin` through `AssetManager` rather
@@ -121,6 +126,28 @@ model's 447-symbol alphabet falling back to literal frames at +3 B of flag and c
 paying the 3.8× an escape-per-character model would cost them. The same numbers appear on the
 console: bytes per message on the bubble, the draft's cost while it is typed, and the total the
 session has put on the air.
+
+## Staying alive in the field
+
+Three things the platform fights, and what this build does about each:
+
+- **The radio dies with the app.** A walkie that stops hearing when the phone goes into a pocket is
+  not a walkie, so the mesh runs behind a `connectedDevice` foreground service with a silent
+  "VANI is listening · N phones in range" line that restates the roster as it changes. Verified on
+  device: 30 s after HOME the service is still `isForeground=true` on the same pid.
+- **Nobody can type, or speak, in waist-deep water.** Six one-tap rescue lines and an SOS beacon
+  that repeats every 12 s for a capped 10 minutes and then stops itself. They are authored in
+  Hindi, the pivot the translator is measured on, and travel as ordinary text - so the receiving
+  phone translates and speaks them in *its* operator's language, and no hand-written eleven-way
+  phrase table enters this repo.
+- **Volume is a rescue decision.** The media stream is raised to a 75% floor at start-up and before
+  each incoming line, and a `ContentObserver` on the system's own volume setting makes the app stop
+  touching it the first moment the user moves it. Loud by default is useful; loud every time they
+  disagree is a reason to uninstall.
+
+What is deliberately **not** claimed: RSSI cannot give metres - 10 dB of wobble is a factor of ten
+in distance, and a wet hand causes that much. The console therefore shows a band and a direction
+(`↑ closer`), never a number, until `calibrate` says what the error actually is on real handsets.
 
 The **Demo** pane in the app is the same thing with a screen on it: phone 1 and phone 2 on one
 handset, each with its own language, so the whole chain can be tested with no second device in
