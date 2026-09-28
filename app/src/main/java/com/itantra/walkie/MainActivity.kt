@@ -183,14 +183,20 @@ class MainActivity : ComponentActivity() {
                     Modifier
                         .fillMaxSize()
                         .background(VaniColors.Ground)
-                        .imePadding()
                 ) {
                     if (setup) {
                         // The setup pane has no chrome of its own, so it takes the safe-drawing
                         // box directly. The console places its own strips against the cutout and
                         // the gesture inset instead.
+                        //
+                        // Each branch carries the keyboard inset exactly once. Two nested
+                        // `imePadding()` calls add up rather than cancel, and on a real handset
+                        // with a tall IME that pushes the field you are typing into off the top of
+                        // the screen - which looks, to the person holding it, like the app will not
+                        // let them write their name.
                         Column(
-                            Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+                            Modifier.fillMaxSize().statusBarsPadding()
+                                .navigationBarsPadding().imePadding()
                         ) {
                             SetupPanel(vm, firstRun = true, onDone = { })
                         }
