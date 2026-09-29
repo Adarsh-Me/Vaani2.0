@@ -158,7 +158,6 @@ private fun MeshPane(
             Modifier.weight(1f).verticalScroll(rememberScrollState())
                 .screenGutter().padding(bottom = NavClearance)
         ) {
-            HowItWorks()
             when (mesh.radio) {
                 // Android 12+ will not let this app enable the radio, so the screen says who can.
                 RadioState.Off, RadioState.PermissionNeeded -> RadioOffPane(
@@ -194,44 +193,6 @@ private fun MeshPane(
             LoadCard(vm)
             YouCard(vm)
         }
-    }
-}
-
-/**
- * Three lines that explain the whole product, on the screen a person lands on first. The sequence
- * is numbered because the order is the information - hold, they hear, they reply - and because
- * "no internet" is the one thing a newcomer keeps assuming is wrong.
- */
-@Composable
-private fun HowItWorks() {
-    Group("How this works") {
-        VaniCard {
-            Column {
-                StepRow(1, "Hold the bar on Talk and speak.")
-                StepRow(2, "The other phone hears it in its own language, out loud.")
-                StepRow(3, "They hold the bar to reply.")
-                Spacer(Modifier.height(10.dp))
-                Rule()
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "No internet, no SIM balance, no account. Phones find each other over " +
-                        "Bluetooth by themselves - there is nothing to pair.",
-                    style = VaniType.labelSmall, color = VaniColors.InkDim
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun StepRow(n: Int, text: String) {
-    Row(
-        Modifier.padding(vertical = 3.dp),
-        verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text("$n", style = VaniLabel.tone.copy(fontWeight = FontWeight.Bold), color = VaniColors.Ink)
-        Text(text, style = VaniType.bodyMedium, color = VaniColors.Ink)
     }
 }
 
@@ -731,11 +692,6 @@ private fun PttZone(
         // can also tap one of these, and neither the keyboard nor the recogniser is trusted to
         // work in water, in noise, or with a shaking hand. The words travel as any sentence does,
         // so the far phone answers them in its own language.
-        Text(
-            "In a hurry? Tap one of these - no typing, no speaking.",
-            style = VaniType.labelSmall, color = VaniColors.InkDim,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),

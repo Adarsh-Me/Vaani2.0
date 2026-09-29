@@ -94,11 +94,6 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                 Group("Your voice") {
                     VaniCard {
                         Column {
-                            Text(
-                                "The voice this phone answers you in. Everyone else keeps their own.",
-                                style = VaniType.bodySmall, color = VaniColors.InkDim
-                            )
-                            Spacer(Modifier.height(10.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Voice.values().forEach { v ->
                                     VoiceOption(
@@ -145,12 +140,7 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                 }
 
                 Group("Advanced audio") {
-                    DisclosureRow(
-                        open = showAdvanced,
-                        closed = "4 settings for how the voice is made: the caller's tone, the male " +
-                            "voice trim, whether to translate at all, and how long it takes.",
-                        onToggle = { showAdvanced = !showAdvanced },
-                    )
+                    DisclosureRow(open = showAdvanced) { showAdvanced = !showAdvanced }
                     if (showAdvanced) {
                         Spacer(Modifier.height(10.dp))
                         VaniCard {
@@ -247,12 +237,12 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
 }
 
 /**
- * Progressive disclosure in the design's own vocabulary: a hairline row, a chevron from the icon
- * set, and the plain sentence of what sits behind it - so nothing is hidden from someone who goes
- * looking, and nothing is in front of someone who is not.
+ * Progressive disclosure in the design's own vocabulary: a hairline row and a chevron from the
+ * icon set. Nothing is hidden from someone who goes looking, and nothing sits in front of someone
+ * who is not.
  */
 @Composable
-private fun DisclosureRow(open: Boolean, closed: String, onToggle: () -> Unit) {
+private fun DisclosureRow(open: Boolean, onToggle: () -> Unit) {
     val shape = RoundedCornerShape(VaniRadius)
     Column {
         Row(
@@ -272,10 +262,6 @@ private fun DisclosureRow(open: Boolean, closed: String, onToggle: () -> Unit) {
                 if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null,
                 tint = VaniColors.InkDim, modifier = Modifier.size(18.dp)
             )
-        }
-        if (!open) {
-            Spacer(Modifier.height(6.dp))
-            Text(closed, style = VaniType.labelSmall, color = VaniColors.InkFaint)
         }
     }
 }
