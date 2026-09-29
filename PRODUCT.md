@@ -156,9 +156,10 @@ needs more than the current hop-limited flood, and per-thread language of record
   literal per message. Proven on the handset over all 22 shipped clips: 1069 B on air against
   1914 B of text, zero mismatches; 9 JVM round-trip/corruption/truncation tests in
   `app/src/test/java/com/itantra/walkie/net/WireCodecTest.kt`.
-- Live console telemetry, all of it this process's own: bytes per message on the bubble, the
-  draft's coded cost while it is typed, the session's on-air total, and CPU / resident memory read
-  from `/proc/self`.
+- Bytes on the wire, shown where they are earned: the coded size of each message on its own bubble
+  (sent and received), and the draft's coded cost while it is being typed. A handset-load readout
+  was built, measured, and taken back out of the interface at the owner's request - the per-message
+  figure is the one that means something to an operator.
 - Field survival layer, verified on the handset: a `connectedDevice` foreground service that keeps
   advertising and scanning with the app backgrounded (30 s after HOME, same pid, still
   `isForeground=true`); six one-tap rescue lines and an SOS beacon that repeats for a capped window

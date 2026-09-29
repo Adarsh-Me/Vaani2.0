@@ -183,7 +183,6 @@ private fun MeshPane(
                     Spacer(Modifier.height(16.dp))
                 }
             }
-            LoadCard(vm)
             YouCard(vm)
         }
     }
@@ -344,82 +343,6 @@ private fun YouCard(vm: WalkieViewModel) {
             color = if (sharing && f == null) VaniColors.Alert else VaniColors.InkDim
         )
     }
-}
-
-/**
- * What this handset is spending on VANI. Unaccented on purpose: a meter wearing signal green
- * invites a verdict nobody measured. The bars are the same three-step primitive a peer row uses
- * for signal strength, so a bar means "measured level" in exactly one way on this screen, and the
- * exact number sits beside it in mono because a glance should never be the only reading available.
- */
-@Composable
-private fun LoadCard(vm: WalkieViewModel) {
-    val l = vm.load
-    Group("This handset") {
-        VaniCard {
-            Column {
-                MeterRow(
-                    label = "CPU · this app",
-                    value = if (l.ready) "${l.cpu.roundToInt()}%" else "…",
-                    note = "share of ${l.coreCount} cores · 1 s samples",
-                    bars = if (!l.ready) 0 else if (l.cpu < 5f) 1 else if (l.cpu < 30f) 2 else 3,
-                )
-                Spacer(Modifier.height(14.dp))
-                Rule()
-                Spacer(Modifier.height(14.dp))
-                MeterRow(
-                    label = "RAM in use · this app",
-                    value = if (l.ramMb > 0) "${gb(l.ramMb)} GB" else "…",
-                    // "1.61 GB" beside a 970 MB install reads as though the app had doubled its own
-                    // footprint on disk. It has not: this is working memory, and the bundled models
-                    // are why it is large. Said here so nobody has to guess which GB they are
-                    // looking at.
-                    note = "working memory, not disk · peak ${gb(l.peakRamMb)} of " +
-                        "${gb(l.totalRamMb)} GB RAM",
-                    bars = level(l.ramMb, l.totalRamMb),
-                )
-                Spacer(Modifier.height(14.dp))
-                Rule()
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    if (vm.ui.wireFrames == 0) "nothing has left this phone over Bluetooth yet"
-                    else "${vm.ui.wireFrames} frame${if (vm.ui.wireFrames == 1) "" else "s"} · " +
-                        "${vm.ui.wireBytes} B on air this session",
-                    style = VaniLabel.stage, color = VaniColors.InkDim
-                )
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "Read from the kernel's own counters for this process. VANI cannot see another app's " +
-                "load, so these are what the app costs, not what the phone is doing.",
-            style = VaniType.labelSmall, color = VaniColors.InkFaint
-        )
-    }
-}
-
-@Composable
-private fun MeterRow(label: String, value: String, note: String, bars: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Column(Modifier.weight(1f)) {
-            Text(label.uppercase(), style = VaniLabel.badge, color = VaniColors.InkDim)
-            Spacer(Modifier.height(4.dp))
-            Text(value, style = VaniLabel.readout, color = VaniColors.Ink, maxLines = 1)
-            Spacer(Modifier.height(2.dp))
-            Text(note, style = VaniLabel.stage, color = VaniColors.InkFaint, maxLines = 1)
-        }
-        SignalBars(bars = bars)
-    }
-}
-
-private fun gb(mb: Int): String = String.format(java.util.Locale.US, "%.2f", mb / 1024.0)
-
-/** Three steps, the peer row's own quantisation; the number beside it carries the precision. */
-private fun level(part: Int, whole: Int): Int = when {
-    whole <= 0 || part <= 0 -> 0
-    part < whole / 8 -> 1
-    part < whole * 2 / 5 -> 2
-    else -> 3
 }
 
 // ------------------------------------------------------------------ talk

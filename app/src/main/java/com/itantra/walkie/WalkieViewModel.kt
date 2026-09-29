@@ -121,9 +121,6 @@ data class UiState(
     /** Per-channel bubbles, newest last. Keyed by [Address.ALL_ID] or a peer's address. */
     val threads: Map<String, List<Msg>> = emptyMap(),
     val demo: DemoState = DemoState(),
-    /** Frames this phone has handed the radio since launch, and the bytes they cost. */
-    val wireFrames: Int = 0,
-    val wireBytes: Int = 0,
     /** A distress beacon is repeating right now, and when it stops on its own. */
     val sosLive: Boolean = false,
     val sosUntilMs: Long = 0L,
@@ -161,15 +158,6 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
     private val player by lazy { Player(app.cacheDir) }
 
     private fun updateUi(s: UiState) { ui = s }
-
-    /**
-     * This handset's own cost, sampled once a second. The console prints it because a walkie that
-     * runs three models on a phone has to be able to say what that takes - and because "it works"
-     * without a number next to it is a claim, not a demonstration.
-     */
-    val load: com.itantra.walkie.perf.DeviceLoad by lazy {
-        com.itantra.walkie.perf.DeviceLoad(getApplication(), viewModelScope)
-    }
 
     // ---------------------------------------------------------------- mesh + identity
 
@@ -450,8 +438,6 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         )
         updateUi(ui.copy(
             lastText = t,
-            wireFrames = ui.wireFrames + if (sent) 1 else 0,
-            wireBytes = ui.wireBytes + onAir,
             status = if (sent) "on air · $onAir B" else "not sent · no link up"
         ))
     }

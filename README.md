@@ -86,7 +86,6 @@ app/src/main/java/com/itantra/walkie/
   net/      BLE mesh: advertising, scanning, GATT links, fragmentation, relaying,
             the foreground service that keeps them alive, position, proximity
   ui/       Mesh / Talk / Setup / Demo - Compose, one theme from the handed-off design system
-  perf/     this process's own CPU and resident memory, read from /proc/self
   WalkieViewModel.kt   the one place a turn is assembled
 scripts/    host-side measurement: pitch, spectrum, WER, reference-voice audit
 ```
