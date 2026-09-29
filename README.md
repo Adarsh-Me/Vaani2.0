@@ -123,8 +123,7 @@ ships: **1069 B on the wire against 1914 B of text (-45%), zero mismatches** - H
 Malayalam 167 B → 38 B, Telugu 96 B → 32 B, and the three languages whose letters are outside the
 model's 447-symbol alphabet falling back to literal frames at +3 B of flag and checksum rather than
 paying the 3.8× an escape-per-character model would cost them. The same numbers appear on the
-console: bytes per message on the bubble, the draft's cost while it is typed, and the total the
-session has put on the air.
+console: bytes per message on the bubble, and the draft's cost while it is typed.
 
 ## Staying alive in the field
 
@@ -144,9 +143,14 @@ Three things the platform fights, and what this build does about each:
   touching it the first moment the user moves it. Loud by default is useful; loud every time they
   disagree is a reason to uninstall.
 
-What is deliberately **not** claimed: RSSI cannot give metres - 10 dB of wobble is a factor of ten
-in distance, and a wet hand causes that much. The console therefore shows a band and a direction
-(`↑ closer`), never a number, until `calibrate` says what the error actually is on real handsets.
+What is deliberately **not** claimed: RSSI cannot give metres - 10 dB of wobble is a factor of ten in
+distance, and a wet hand causes that much. So a peer row takes one smoothed level (the median of the
+last eight samples) and shows it in three shapes that cannot disagree with each other - a bar that
+fills as the handset comes closer, three steps, and a word - with a direction under them (`↑ closer`),
+which is the one thing a person walking can actually act on. There is no figure on that meter, because
+there is no figure it could honestly carry. The distance the **two GPS fixes** agree on is printed as a
+number, because two positions are a measurement where a signal level is not. Until `calibrate` runs on
+two real handsets, none of it - bar, band, arrow - has been seen working between two devices.
 
 The **Demo** pane in the app is the same thing with a screen on it: phone 1 and phone 2 on one
 handset, each with its own language, so the whole chain can be tested with no second device in

@@ -235,13 +235,10 @@ class BleMesh(
         publish()
     }
 
-    /** The rolling signal history the proximity band and the trend arrow come from. */
+    /** The rolling signal history the proximity bar, its fill and the trend arrow come from. */
     private val rssiHist = HashMap<String, ArrayDeque<Int>>()
 
-    override fun proximity(addr: String): Pair<Int, Trend> {
-        val r = known[addr]?.rssi ?: return 0 to Trend.UNKNOWN
-        return Proximity.band(r) to Proximity.trend(rssiHist[addr]?.toList() ?: emptyList())
-    }
+    override fun proximitySamples(addr: String): List<Int> = rssiHist[addr]?.toList() ?: emptyList()
 
     // ------------------------------------------------------------------ sending
 

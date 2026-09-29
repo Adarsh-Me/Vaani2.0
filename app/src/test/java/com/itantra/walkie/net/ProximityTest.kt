@@ -28,6 +28,78 @@ class ProximityTest {
         }
     }
 
+    /**
+     * -1 is what this codebase stores when the radio reported nothing. A reading that does not exist
+     * must not come out as "beside you", which is the failure mode that sends someone toward a phone
+     * that is not there.
+     */
+    @Test
+    fun aMissingReadingIsNeverTheStrongestOne() {
+        assertEquals(0, Proximity.band(-1))
+        assertEquals(0, Proximity.band(0))
+        assertEquals(0f, Proximity.fill(-1), 0f)
+        assertNull(Proximity.smoothed(emptyList()))
+    }
+
+    @Test
+    fun barStepsComeOutOfTheSameBands() {
+        assertEquals(3, Proximity.bars(4))
+        assertEquals(2, Proximity.bars(3))
+        assertEquals(2, Proximity.bars(2))
+        assertEquals(1, Proximity.bars(1))
+        assertEquals(1, Proximity.bars(0))
+        // A weaker band can never show more steps.
+        var last = -1
+        for (b in 0..4) {
+            val s = Proximity.bars(b)
+            assertTrue("steps went backwards at band $b", s >= last)
+            last = s
+        }
+    }
+
+    /**
+     * The bar is drawn across the span the bands divide, so a full bar means `beside you` and an
+     * empty one means the edge of range - the drawing and the words cannot tell two stories.
+     */
+    @Test
+    fun fillSpansTheBandThresholds() {
+        assertEquals(0f, Proximity.fill(-91), 0.001f)
+        assertEquals(1f, Proximity.fill(-61), 0.001f)
+        assertEquals(0.5f, Proximity.fill(-76), 0.001f)
+        assertEquals(1f, Proximity.fill(-40), 0.001f)   // saturates, never overflows
+        assertEquals(0f, Proximity.fill(-120), 0.001f)
+        for (r in -120..-2) {
+            val f = Proximity.fill(r)
+            if (f == 1f) assertEquals("full bar at $r is not the top band", 4, Proximity.band(r))
+            if (f == 0f) assertTrue("empty bar at $r reads as in range", Proximity.band(r) <= 1)
+        }
+    }
+
+    /**
+     * The reason the row takes the window and not the newest packet: one strong advertisement must
+     * not fill the meter, or the meter reads as motion whenever the radio happens to be lucky.
+     */
+    @Test
+    fun theRowReadsTheWindowNotTheNewestPacket() {
+        val jittered = listOf(-70, -74, -68, -73, -69, -72, -67, -71)
+        val level = Proximity.smoothed(jittered)!!
+        assertTrue("jitter moved the level by ${kotlin.math.abs(level + 70)} dB",
+            kotlin.math.abs(level - -70) <= 3)
+        // Walking up close: the meter has to rise, or it is decoration.
+        val walking = listOf(-92, -90, -84, -78, -72, -66)
+        assertTrue(
+            "the meter did not rise as the handset came closer",
+            Proximity.fill(Proximity.smoothed(walking)!!) >
+                Proximity.fill(Proximity.smoothed(listOf(-92, -90, -88, -86, -84, -82))!!)
+        )
+        // One lucky packet at the end of a distant window stays a distant window.
+        val lucky = listOf(-92, -90, -88, -86, -84, -60)
+        assertTrue(
+            "one packet filled the meter",
+            Proximity.fill(Proximity.smoothed(lucky)!!) < 0.35f
+        )
+    }
+
     @Test
     fun oneReadingGivesNoDirection() {
         assertEquals(Trend.UNKNOWN, Proximity.trend(listOf(-70)))

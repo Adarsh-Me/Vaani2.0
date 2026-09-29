@@ -71,6 +71,7 @@ import com.itantra.walkie.Msg
 import com.itantra.walkie.Pane
 import com.itantra.walkie.WalkieViewModel
 import com.itantra.walkie.net.Address
+import com.itantra.walkie.net.Proximity
 import kotlin.math.roundToInt
 import com.itantra.walkie.net.RadioState
 import java.text.SimpleDateFormat
@@ -252,6 +253,10 @@ private fun PeerSection(vm: WalkieViewModel, reached: Int, now: Long) {
             val d = it[0].distanceM(it[1])
             if (d < 950) "${d.roundToInt()} m from you" else "${"%.1f".format(d / 1000)} km from you"
         }
+        // One smoothed level drives the bar, the steps and the word; the arrow is the only thing
+        // that needs the whole window, because a direction is a slope and a slope needs samples.
+        val samples = vm.mesh.proximitySamples(p.id)
+        val level = Proximity.smoothed(samples) ?: p.rssi
         PeerRow(
             initials = initials(if (named) p.name else p.id),
             name = if (named) p.name else p.id,
@@ -259,8 +264,8 @@ private fun PeerSection(vm: WalkieViewModel, reached: Int, now: Long) {
                 " — " + (if (named) "last heard ${since(p.lastHeardMs)} ago" else "not yet introduced") +
                 (gap?.let { " · $it" } ?: "") +
                 if (voice) "" else " · typed only",
-            rssi = p.rssi,
-            trend = com.itantra.walkie.net.Proximity.arrow(vm.mesh.proximity(p.id).second),
+            rssi = level,
+            trend = Proximity.arrow(Proximity.trend(samples)),
             selected = vm.ui.active == p.id,
             modifier = Modifier.padding(top = if (i == 0) 8.dp else 0.dp),
             onClick = { vm.selectChannel(p.id); vm.selectPane(Pane.Talk) },

@@ -165,8 +165,10 @@ needs more than the current hop-limited flood, and per-thread language of record
   `isForeground=true`); six one-tap rescue lines and an SOS beacon that repeats for a capped window
   and stops itself; a GPS position stamp shared to phones in range; and a loud-by-default media
   stream that yields permanently the first moment the user moves the volume.
-- Proximity is stated as a band and a direction, never as metres. RSSI wobbles 10-20 dB on a wet
-  hand, and 10 dB is a factor of ten in distance - so `calibrate` has to produce a real
+- Proximity is stated as a band, a relative bar and a direction - never as metres. RSSI wobbles
+  10-20 dB on a wet hand, and 10 dB is a factor of ten in distance, so the row shows the median of
+  the last eight samples (a bar that fills as you get warmer, steps, a word, an arrow) and prints a
+  distance only where **two GPS fixes** produced one. `calibrate` has to produce a real
   RSSI-against-ground-distance table on two handsets before any distance number is allowed on
   screen.
 - Measured pipeline behaviour recorded in project memory (latency, per-language voice quality,

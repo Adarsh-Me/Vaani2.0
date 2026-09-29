@@ -605,10 +605,17 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
                 if (ps.isEmpty()) android.util.Log.e("CAL", "no peer in range")
                 for (p in ps) {
                     val d = if (me != null && p.pos != null) me.distanceM(p.pos!!) else -1.0
-                    val (band, trend) = mesh.proximity(p.id)
+                    // The whole window, not just this instant's reading: the point of the walk is the
+                    // scatter, and a smoothed number logged without its samples cannot be re-checked.
+                    val win = mesh.proximitySamples(p.id)
+                    val level = com.itantra.walkie.net.Proximity.smoothed(win) ?: p.rssi
                     android.util.Log.e(
                         "CAL", "t=${System.currentTimeMillis()} id=${p.id.take(8)} rssi=${p.rssi} " +
-                            "band=$band trend=${trend.name} ground_m=${"%.1f".format(d)} " +
+                            "window=${win.joinToString(",")} level=$level " +
+                            "band=${com.itantra.walkie.net.Proximity.band(level)} " +
+                            "fill=${"%.2f".format(com.itantra.walkie.net.Proximity.fill(level))} " +
+                            "trend=${com.itantra.walkie.net.Proximity.trend(win).name} " +
+                            "ground_m=${"%.1f".format(d)} " +
                             "my_acc=${me?.accM ?: -1} peer_acc=${p.pos?.accM ?: -1} " +
                             "fix_age_s=${me?.ageS() ?: -1}"
                     )

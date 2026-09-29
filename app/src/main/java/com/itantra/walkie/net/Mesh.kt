@@ -32,14 +32,8 @@ data class Peer(
     /** Where it said it was, from its own GPS. Null until a position frame arrives. */
     val pos: Fix? = null,
 ) {
-    /** 0..4 bars. Real hardware reports roughly -50 dBm next hand to -95 dBm at range. */
-    val bars: Int get() = when {
-        rssi >= -61 -> 4
-        rssi >= -71 -> 3
-        rssi >= -81 -> 2
-        rssi >= -91 -> 1
-        else -> 0
-    }
+    /** 0..4 bands, from the one threshold table the console's meter uses. */
+    val bars: Int get() = Proximity.band(rssi)
 }
 
 /**
@@ -61,11 +55,14 @@ interface MeshTransport {
     fun reachable(addr: Address): Boolean
 
     /**
-     * How near a peer is, as a band and a direction of travel - never metres, which is the one
-     * thing RSSI cannot support. Default implementation says "unknown" so a transport without
-     * signal history cannot accidentally claim a reading it does not have.
+     * The rolling signal samples for one peer, oldest first, newest last. Everything the console says
+     * about nearness - the bar fill, the direction of travel - is computed from these by
+     * [Proximity], which is where the honest limits of RSSI are written down. Never metres.
+     *
+     * Default is empty so a transport that keeps no signal history cannot accidentally claim a
+     * reading it does not have: the bar stays flat and the arrow stays quiet.
      */
-    fun proximity(addr: String): Pair<Int, Trend> = 0 to Trend.UNKNOWN
+    fun proximitySamples(addr: String): List<Int> = emptyList()
 
     fun start()
     fun stop()

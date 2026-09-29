@@ -1,8 +1,10 @@
 package com.itantra.walkie.ui
 
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -64,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.itantra.walkie.Lang
+import com.itantra.walkie.net.Proximity
 import com.itantra.walkie.net.RadioState
 import kotlinx.coroutines.delay
 
@@ -521,8 +524,18 @@ fun ScanLine(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * `.peer` - one handset in range. Initials, name, what it speaks and how it was reached, and the
- * signal read as bars *and* |dBm| *and* a word, because a number alone is not field-legible.
+ * `.peer` - one handset in range. Initials, name, what it speaks and how it was reached, then the
+ * meter: the stepped bars, the live proximity bar beside them, and two words - how near it is, and
+ * which way it is moving.
+ *
+ * [rssi] is the *smoothed* level from [Proximity.smoothed], not the newest packet, and the steps,
+ * the word and the fill are all cut from it - so the row gives one reading three shapes rather than
+ * three readings that happen to sit next to each other.
+ *
+ * Deliberately no distance figure and no dBm. RSSI moves 10-20 dB on a wet hand or a turned phone,
+ * which is a factor of ten in metres, so a number printed from it would be decoration; see
+ * [Proximity] for what the reading does support. The ground distance the two GPS fixes agree on is a
+ * different matter and appears in the line above, where both phones have one.
  */
 @Composable
 fun PeerRow(
@@ -536,6 +549,7 @@ fun PeerRow(
     onClick: () -> Unit,
 ) {
     val shape = RoundedCornerShape(VaniRadiusBubble)
+    val band = Proximity.band(rssi)
     Row(
         modifier.fillMaxWidth().defaultMinSize(minHeight = 64.dp)
             .background(if (selected) VaniColors.PanelLit else VaniColors.Panel, shape)
@@ -552,33 +566,61 @@ fun PeerRow(
             Text(meta, style = VaniType.labelMedium, color = VaniColors.InkDim, maxLines = 2,
                 overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
         }
-        Column(horizontalAlignment = Alignment.End) {
-            SignalBars(signalOf(rssi).bars)
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            // The bars give the band at a glance; the bar beside them is the level itself, so the one
+            // element that visibly moves while a person is walking is the live one.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                SignalBars(Proximity.bars(band))
+                ProximityBar(Proximity.fill(rssi))
+            }
             Text(
-                "${kotlin.math.abs(rssi)}",
-                style = VaniType.labelMedium.copy(fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal),
-                color = if (selected) VaniColors.Ink else VaniColors.InkDim
+                Proximity.word(band),
+                style = VaniType.labelMedium, color = VaniColors.Ink, maxLines = 1
             )
-            Text("dBm · ${signalOf(rssi).word}", style = VaniType.labelSmall, color = VaniColors.InkFaint)
             // The direction of travel, not a distance: this is the line a person walking with the
             // phone in their hand actually acts on, and it is the one claim RSSI can support.
             if (trend.isNotBlank()) {
                 Text(
                     trend, style = VaniType.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = VaniColors.InkDim, modifier = Modifier.padding(top = 2.dp)
+                    color = VaniColors.InkDim, maxLines = 1
                 )
             }
         }
     }
 }
 
-/** `.signal(rssi)` from the design's own thresholds, with the word beside the bars. */
-fun signalOf(rssi: Int): Signal = when {
-    rssi > -65 -> Signal(3, "strong")
-    rssi > -80 -> Signal(2, "ok")
-    else -> Signal(1, "faint")
+/**
+ * The proximity meter: 0f at the edge of range, 1f beside you, drawn across the same dBm span the
+ * band words and the bar steps divide - so the fill, the bars and the word under them are one
+ * reading rather than three that happen to be nearby.
+ *
+ * It carries no number on purpose. It answers "am I getting warmer", which is what the signal
+ * supports, and not "how far", which it does not.
+ */
+@Composable
+fun ProximityBar(fill: Float, modifier: Modifier = Modifier) {
+    val reduce = reduceMotion()
+    val frac by animateFloatAsState(
+        targetValue = fill.coerceIn(0f, 1f),
+        animationSpec = tween(if (reduce) 0 else 260, easing = FastOutSlowInEasing),
+        label = "proximity"
+    )
+    // Fixed width: only the drawn fill moves, so an updating radio never reflows the list.
+    Canvas(modifier.size(52.dp, 4.dp)) {
+        val r = androidx.compose.ui.geometry.CornerRadius(size.height / 2f, size.height / 2f)
+        drawRoundRect(color = VaniColors.Rule, size = Size(size.width, size.height), cornerRadius = r)
+        val w = size.width * frac
+        if (w > 0f) drawRoundRect(
+            color = VaniColors.InkDim, size = Size(w, size.height), cornerRadius = r
+        )
+    }
 }
-data class Signal(val bars: Int, val word: String)
 
 /**
  * The design's three bars, drawn not glyphed. Empty steps stay visible at low alpha so a faint
