@@ -368,9 +368,14 @@ private fun LoadCard(vm: WalkieViewModel) {
                 Rule()
                 Spacer(Modifier.height(14.dp))
                 MeterRow(
-                    label = "Memory · this app",
+                    label = "RAM in use · this app",
                     value = if (l.ramMb > 0) "${gb(l.ramMb)} GB" else "…",
-                    note = "peak ${gb(l.peakRamMb)} GB of ${gb(l.totalRamMb)} GB in the phone",
+                    // "1.61 GB" beside a 970 MB install reads as though the app had doubled its own
+                    // footprint on disk. It has not: this is working memory, and the bundled models
+                    // are why it is large. Said here so nobody has to guess which GB they are
+                    // looking at.
+                    note = "working memory, not disk · peak ${gb(l.peakRamMb)} of " +
+                        "${gb(l.totalRamMb)} GB RAM",
                     bars = level(l.ramMb, l.totalRamMb),
                 )
                 Spacer(Modifier.height(14.dp))
