@@ -7,13 +7,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -45,6 +52,10 @@ import com.itantra.walkie.WalkieViewModel
 fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
     var name by remember { mutableStateOf(vm.ui.name) }
     val canJoin = name.isNotBlank()
+    // Four of the audio controls are engineering choices - flow steps, a pitch trim, a tone
+    // transfer function. They belong on this screen and none of them belong in front of someone
+    // who has just opened the app in the rain, so they are one tap away rather than on the face.
+    var showAdvanced by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize()
@@ -80,30 +91,14 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                     }
                 }
 
-                Group("Speech pack") {
-                    VaniCard {
-                        Column {
-                            Readout("Recognition model", "SraVaani-1.0 · int8 · bundled in the app")
-                            Readout(
-                                "Languages the mic is measured on",
-                                "${Lang.values().count { vm.hasVoice(it) }} of ${Lang.values().size}"
-                            )
-                            Readout("Pack size on this phone", "520 MB, inside the 970 MB app")
-                            Spacer(Modifier.height(8.dp))
-                            Rule()
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Nothing is fetched at runtime: the model ships in the app so the " +
-                                    "phone keeps working with no network, which is the point of it.",
-                                style = VaniType.labelSmall, color = VaniColors.InkFaint
-                            )
-                        }
-                    }
-                }
-
                 Group("Your voice") {
                     VaniCard {
                         Column {
+                            Text(
+                                "The voice this phone answers you in. Everyone else keeps their own.",
+                                style = VaniType.bodySmall, color = VaniColors.InkDim
+                            )
+                            Spacer(Modifier.height(10.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Voice.values().forEach { v ->
                                     VoiceOption(
@@ -117,35 +112,10 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                             Rule()
                             Spacer(Modifier.height(10.dp))
                             SwitchRow(
-                                "Tone matching",
-                                "Reply is rendered in the shade the caller used · measured, not felt",
-                                vm.ui.matchTone
-                            ) { vm.setMatchTone(it) }
-                            Spacer(Modifier.height(12.dp))
-                            SwitchRow(
-                                "Male voice trim",
-                                "Walks the brighter solve back toward the pitch of its own prompt",
-                                vm.ui.softMale
-                            ) { vm.setSoftMale(it) }
-                            Spacer(Modifier.height(12.dp))
-                            SwitchRow(
-                                "Translate every transmission",
-                                "Off sends your own words across unchanged",
-                                vm.ui.translateOn
-                            ) { vm.setTranslateEnabled(it) }
-                            Spacer(Modifier.height(12.dp))
-                            SwitchRow(
-                                "Turbo solve",
-                                if (vm.ui.turbo) "Shorter donor prompt · ${AppConfig.TTS_NFE_TURBO} flow steps · answers in ~3 s"
-                                else "Whole donor prompt · ${AppConfig.TTS_NFE_FULL} flow steps · the fullest voice",
-                                vm.ui.turbo
-                            ) { vm.setTurbo(it) }
-                            Spacer(Modifier.height(12.dp))
-                            SwitchRow(
                                 "Keep incoming voice loud",
                                 if (vm.ui.loudInbound)
-                                    "Raises the ringer so a reply carries outdoors · turns itself " +
-                                        "off the moment you move the volume"
+                                    "So a reply carries outdoors · stops the moment you turn " +
+                                        "the volume down yourself"
                                 else "Your own volume setting is left alone, at any level",
                                 vm.ui.loudInbound
                             ) { vm.setLoudInbound(it) }
@@ -153,8 +123,8 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                             SwitchRow(
                                 "Share my position",
                                 if (vm.ui.sharePos)
-                                    "Your GPS fix goes to phones in Bluetooth range · no network, " +
-                                        "no history, no server"
+                                    "Your GPS location goes to phones in Bluetooth range only · " +
+                                        "no internet, no history, no server"
                                 else "Other phones see your name but not where you are",
                                 vm.ui.sharePos
                             ) { vm.setSharePosition(it) }
@@ -169,6 +139,51 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                                 Text(
                                     vm.ui.status, style = VaniType.labelSmall, color = VaniColors.InkFaint
                                 )
+                            }
+                        }
+                    }
+                }
+
+                Group("Advanced audio") {
+                    DisclosureRow(
+                        open = showAdvanced,
+                        closed = "4 settings for how the voice is made: the caller's tone, the male " +
+                            "voice trim, whether to translate at all, and how long it takes.",
+                        onToggle = { showAdvanced = !showAdvanced },
+                    )
+                    if (showAdvanced) {
+                        Spacer(Modifier.height(10.dp))
+                        VaniCard {
+                            Column {
+                                SwitchRow(
+                                    "Reply in the caller's tone",
+                                    "The reply is rendered in the shade of voice the caller used · " +
+                                        "measured off their own microphone, not guessed",
+                                    vm.ui.matchTone
+                                ) { vm.setMatchTone(it) }
+                                Spacer(Modifier.height(12.dp))
+                                SwitchRow(
+                                    "Softer male voice",
+                                    "Walks the brighter solve back toward the pitch of its own " +
+                                        "reference clip",
+                                    vm.ui.softMale
+                                ) { vm.setSoftMale(it) }
+                                Spacer(Modifier.height(12.dp))
+                                SwitchRow(
+                                    "Translate what I hear",
+                                    "Off sends your own words across unchanged, in your language",
+                                    vm.ui.translateOn
+                                ) { vm.setTranslateEnabled(it) }
+                                Spacer(Modifier.height(12.dp))
+                                SwitchRow(
+                                    if (vm.ui.turbo) "Answer faster (shorter voice)" else "Fuller voice (slower)",
+                                    if (vm.ui.turbo)
+                                        "${AppConfig.TTS_NFE_TURBO} flow steps · first words in ~3 s · " +
+                                            "a shorter donor clip behind the voice"
+                                    else "${AppConfig.TTS_NFE_FULL} flow steps · ~6 s · the fullest " +
+                                        "rendering this model can give",
+                                    vm.ui.turbo
+                                ) { vm.setTurbo(it) }
                             }
                         }
                     }
@@ -194,6 +209,29 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                     )
                 }
 
+                // The model facts are for whoever audits the build, not for the person setting
+                // their name, so they sit at the bottom of the screen rather than the middle.
+                Group("Speech pack") {
+                    VaniCard {
+                        Column {
+                            Readout("Recognition model", "SraVaani-1.0 · int8 · bundled in the app")
+                            Readout(
+                                "Languages the mic is measured on",
+                                "${Lang.values().count { vm.hasVoice(it) }} of ${Lang.values().size}"
+                            )
+                            Readout("Pack size on this phone", "520 MB, inside the 970 MB app")
+                            Spacer(Modifier.height(8.dp))
+                            Rule()
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                "Nothing is fetched at runtime: the model ships in the app so the " +
+                                    "phone keeps working with no network, which is the point of it.",
+                                style = VaniType.labelSmall, color = VaniColors.InkFaint
+                            )
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(16.dp))
                 PrimaryButton(
                     label = if (firstRun) "Save — go find people" else "Save identity",
@@ -204,6 +242,40 @@ fun SetupPanel(vm: WalkieViewModel, firstRun: Boolean, onDone: () -> Unit) {
                 }
                 Spacer(Modifier.height(12.dp))
             }
+        }
+    }
+}
+
+/**
+ * Progressive disclosure in the design's own vocabulary: a hairline row, a chevron from the icon
+ * set, and the plain sentence of what sits behind it - so nothing is hidden from someone who goes
+ * looking, and nothing is in front of someone who is not.
+ */
+@Composable
+private fun DisclosureRow(open: Boolean, closed: String, onToggle: () -> Unit) {
+    val shape = RoundedCornerShape(VaniRadius)
+    Column {
+        Row(
+            Modifier.fillMaxWidth().defaultMinSize(minHeight = VaniTarget)
+                .background(if (open) VaniColors.PanelLit else VaniColors.Panel, shape)
+                .border(1.dp, VaniColors.Rule, shape)
+                .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onToggle)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                if (open) "Hide these settings" else "Show these settings",
+                style = VaniType.bodyMedium, color = VaniColors.Ink, modifier = Modifier.weight(1f)
+            )
+            Icon(
+                if (open) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore, null,
+                tint = VaniColors.InkDim, modifier = Modifier.size(18.dp)
+            )
+        }
+        if (!open) {
+            Spacer(Modifier.height(6.dp))
+            Text(closed, style = VaniType.labelSmall, color = VaniColors.InkFaint)
         }
     }
 }

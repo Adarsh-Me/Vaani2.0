@@ -204,7 +204,7 @@ class WalkieViewModel(app: Application) : AndroidViewModel(app) {
         // has not re-listed that node this second, and an unknown sender is labelled as one
         // rather than silently dropped.
         val peer = mesh.lastKnown(fromPeerId)
-        val from = peer?.name?.takeIf { it.isNotBlank() } ?: "unknown node"
+        val from = peer?.name?.takeIf { it.isNotBlank() } ?: "un-named phone"
         runReceive(
             text = text,
             fromLang = peer?.lang ?: ui.tgt,
