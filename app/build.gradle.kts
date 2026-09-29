@@ -11,8 +11,8 @@ android {
         applicationId = "com.itantra.walkie"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "2.0-walkie-singleMT"
+        versionCode = 3
+        versionName = "2.5-peer-proximity"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
     buildTypes {
