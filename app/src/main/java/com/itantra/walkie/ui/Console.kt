@@ -176,17 +176,10 @@ private fun MeshPane(
                         )
                     }
                     PeerSection(vm, reached, now)
-                    // Still said, still gold, still next to its word - but one sentence instead of
-                    // a paragraph, so a newcomer reads it as a fact rather than as an error.
-                    Notice(
-                        warn = true,
-                        body = androidx.compose.ui.text.buildAnnotatedString {
-                            append("Phones being found is real Bluetooth. ")
-                            append(
-                                "A message crossing two handsets has not been demonstrated yet, so " +
-                                    "sends say \"in range\", never \"delivered\"."
-                            )
-                        })
+                    // The delivery caveat is not stated here any more, on purpose: each bubble
+                    // already carries its own truth - "on air · N in range", or "not sent - no
+                    // verified link" - so a permanent box above the list would only be the same
+                    // sentence shouted at everyone whether or not it applies to their message.
                     Spacer(Modifier.height(16.dp))
                 }
             }
